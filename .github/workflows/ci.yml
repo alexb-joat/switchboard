@@ -1,0 +1,39 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# Least privilege: the workflow can read the repo and nothing else.
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.11", "3.13"]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 10
+    steps:
+      # Actions pinned to full commit SHAs (tags can be moved; SHAs can't).
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install (hash-verified)
+        run: pip install --require-hashes --no-deps -r requirements-dev.txt
+      - name: Tests
+        run: python -m pytest -q
+      - name: Smoke test (real server, real sockets)
+        run: python scripts/smoke.py
+      - name: Dependency vulnerability audit
+        if: runner.os == 'Linux' && matrix.python == '3.13'
+        run: pipx run pip-audit -r requirements.txt --require-hashes --strict
+      - name: Config sanity
+        run: python -m switchboard --config config.example.yaml check

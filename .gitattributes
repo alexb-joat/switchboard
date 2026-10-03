@@ -1,0 +1,4 @@
+# Same line endings on every OS: shell scripts break with CRLF, PowerShell is happiest with it.
+* text=auto eol=lf
+*.ps1 text eol=crlf
+*.bat text eol=crlf

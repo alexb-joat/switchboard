@@ -1,0 +1,14 @@
+version: 2
+updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule: { interval: weekly }
+    # Hold new releases for a week: most hijacked packages are pulled within days.
+    cooldown: { default-days: 7 }
+  - package-ecosystem: github-actions
+    directory: /
+    schedule: { interval: weekly }
+    cooldown: { default-days: 7 }
+  - package-ecosystem: docker
+    directory: /
+    schedule: { interval: weekly }

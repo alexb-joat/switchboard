@@ -1,0 +1,20 @@
+services:
+  switchboard:
+    build: .
+    ports:
+      - "127.0.0.1:8787:8787"     # reachable from this machine only
+    env_file: .env                 # SWITCHBOARD_API_KEY + provider keys; never committed
+    volumes:
+      - ./config.yaml:/config/config.yaml:ro
+      - ./logs:/app/logs
+    extra_hosts:
+      - "host.docker.internal:host-gateway"   # reach Ollama on the host (Linux)
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    pids_limit: 128
+    restart: unless-stopped
