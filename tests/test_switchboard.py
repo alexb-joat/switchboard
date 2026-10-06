@@ -213,6 +213,34 @@ def test_streaming_relay():
     assert r.status_code == 200 and r.content == sse
 
 
+def test_decision_log_records_usage_not_content(tmp_path):
+    logf = tmp_path / "decisions.jsonl"
+    sse = (b'data: {"choices":[{"delta":{"content":"secret answer"}}]}\n\n'
+           b'data: {"choices":[],"usage":{"prompt_tokens":12,"completion_tokens":3,'
+           b'"total_tokens":15,"note":"x"}}\n\ndata: [DONE]\n\n')
+
+    class Chunks(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            yield sse
+
+    def handler(req):
+        if json.loads(req.content).get("stream"):
+            return httpx.Response(200, stream=Chunks(), headers={"content-type": "text/event-stream"})
+        r = ok("x").json()
+        r["usage"] = {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
+        return httpx.Response(200, json=r)
+
+    c = make_client(handler, cfg(logging={"path": str(logf)}))
+    c.post("/v1/chat/completions", json=body("hello there"))
+    c.post("/v1/chat/completions", json=body("hello again", stream=True))
+    recs = [json.loads(line) for line in logf.read_text().splitlines()]
+    assert recs[0]["usage"] == {"prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7}
+    assert recs[1]["usage"] == {"prompt_tokens": 12, "completion_tokens": 3, "total_tokens": 15}
+    assert recs[0]["local"] is True
+    raw = logf.read_text()
+    assert "hello" not in raw and "secret answer" not in raw
+
+
 def test_all_fail_returns_502():
     def handler(req):
         raise httpx.ConnectError("down")

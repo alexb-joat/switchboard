@@ -165,13 +165,20 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
                 "X-Switchboard-Route": d.route,
                 "X-Switchboard-Model": model,
             }
-            _log(log, d, body, model, resp.status_code, attempts, started, sid)
+            local = prov.local
             if not stream:
                 content = resp.content
                 await resp.aclose()
+                _log(log, d, body, model, resp.status_code, attempts, started, sid,
+                     local=local, usage=_usage_from_json(content))
                 return _passthrough(resp, content, route_headers)
+
+            def done(usage, _model=model, _status=resp.status_code, _local=local):
+                _log(log, d, body, _model, _status, attempts, started, sid,
+                     local=_local, usage=usage)
+
             return StreamingResponse(
-                _relay(resp),
+                _relay(resp, done),
                 status_code=resp.status_code,
                 media_type=resp.headers.get("content-type", "text/event-stream"),
                 headers=route_headers,
@@ -192,15 +199,52 @@ def _passthrough(resp: httpx.Response, content: bytes, extra: dict) -> JSONRespo
     return JSONResponse(payload, status_code=resp.status_code, headers=extra)
 
 
-async def _relay(resp: httpx.Response):
+def _usage_from_json(content: bytes) -> dict | None:
+    try:
+        u = json.loads(content).get("usage")
+    except (ValueError, AttributeError):
+        return None
+    return _clean_usage(u)
+
+
+def _clean_usage(u) -> dict | None:
+    """Keep only the token counters (numbers), nothing else from the upstream."""
+    if not isinstance(u, dict):
+        return None
+    out = {k: u[k] for k in ("prompt_tokens", "completion_tokens", "total_tokens")
+           if isinstance(u.get(k), int)}
+    return out or None
+
+
+def _usage_from_sse(tail: bytes) -> dict | None:
+    """Streaming: the usage block, when the provider sends one, is in the last events."""
+    for line in reversed(tail.decode("utf-8", "replace").splitlines()):
+        line = line.strip()
+        if not line.startswith("data:") or '"usage"' not in line:
+            continue
+        try:
+            u = _clean_usage(json.loads(line[5:].strip()).get("usage"))
+        except (ValueError, AttributeError):
+            continue
+        if u:
+            return u
+    return None
+
+
+async def _relay(resp: httpx.Response, on_done=None):
+    tail = b""
     try:
         async for chunk in resp.aiter_raw():
+            tail = (tail + chunk)[-16384:]
             yield chunk
     finally:
         await resp.aclose()
+        if on_done:
+            on_done(_usage_from_sse(tail))
 
 
-def _log(log: DecisionLog, d: Decision, body: dict, model, status, attempts, started, sid) -> None:
+def _log(log: DecisionLog, d: Decision, body: dict, model, status, attempts, started, sid,
+         local: bool | None = None, usage: dict | None = None) -> None:
     text = all_text(body.get("messages") or [])
     rec = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -214,6 +258,8 @@ def _log(log: DecisionLog, d: Decision, body: dict, model, status, attempts, sta
         "prompt_fp": fingerprint(text),
         "prompt_chars": len(text),
         "session_fp": fingerprint(sid) if sid else None,
+        "local": local,
+        "usage": usage,
     }
     if log.log_prompts:
         rec["prompt"] = text

@@ -113,6 +113,8 @@ Invoke-RestMethod http://127.0.0.1:8787/v1/chat/completions -Method Post -Conten
 
 Connect a UI: in Odysseus, Open WebUI or any OpenAI-compatible client, add the endpoint `http://127.0.0.1:8787/v1` and pick model `auto`.
 
+See every routing decision live: [Workflow Arcade](https://github.com/alexb-joat/workflow-arcade) reads the decision log (route, model, tokens; never prompts) and shows it as a game-like map of your work.
+
 ## Docker (optional)
 
 Running natively is simpler and keeps Ollama on localhost. If you want the container:
