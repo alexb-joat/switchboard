@@ -1,0 +1,12 @@
+# Every change needs the owner's review; the lines below make the
+# security-sensitive paths explicit.
+*                          @alexb-joat
+/switchboard/security.py   @alexb-joat
+/switchboard/config.py     @alexb-joat
+/switchboard/app.py        @alexb-joat
+/requirements*.txt         @alexb-joat
+/requirements*.in          @alexb-joat
+/.github/                  @alexb-joat
+/Dockerfile                @alexb-joat
+/docker-compose.yml        @alexb-joat
+/deploy/                   @alexb-joat

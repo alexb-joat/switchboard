@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Report a security vulnerability
+    url: https://github.com/alexb-joat/switchboard/security/advisories/new
+    about: Please report vulnerabilities privately, not as public issues.
+  - name: Questions and ideas
+    url: https://github.com/alexb-joat/switchboard/discussions
+    about: Ask and discuss in Discussions.
