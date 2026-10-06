@@ -1,5 +1,11 @@
 # Switchboard
 
+[![ci](https://github.com/alexb-joat/switchboard/actions/workflows/ci.yml/badge.svg)](https://github.com/alexb-joat/switchboard/actions/workflows/ci.yml)
+[![codeql](https://github.com/alexb-joat/switchboard/actions/workflows/codeql.yml/badge.svg)](https://github.com/alexb-joat/switchboard/actions/workflows/codeql.yml)
+![python](https://img.shields.io/badge/python-3.11%2B-3776AB)
+![platforms](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-555)
+[![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+
 **One OpenAI-compatible endpoint that picks the right LLM for each prompt** — local models via Ollama, cloud models (Claude, GPT, anything on OpenRouter), and legacy models — with security as a design constraint, not an add-on.
 
 ```
@@ -156,6 +162,14 @@ python -m pytest -q
 - [ ] Native Anthropic/Gemini adapters (today: their OpenAI-compatible endpoints)
 - [ ] Per-user keys and rate limits for team use
 
+## Contributing
+
+Pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Report security issues privately via the Security tab.
+
+## Support
+
+If Switchboard saves you money or time, you can support it with the **Sponsor** button at the top of the repo.
+
 ## License
 
-MIT
+MIT. Not affiliated with Anthropic, OpenAI, Ollama, OpenRouter or any model provider; their names refer only to their public APIs.

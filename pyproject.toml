@@ -16,6 +16,11 @@ dependencies = [
   "pyyaml",
 ]
 
+[project.urls]
+Homepage = "https://github.com/alexb-joat/switchboard"
+Issues = "https://github.com/alexb-joat/switchboard/issues"
+Security = "https://github.com/alexb-joat/switchboard/security/policy"
+
 [project.scripts]
 switchboard = "switchboard.__main__:main"
 
