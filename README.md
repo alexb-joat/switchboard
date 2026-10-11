@@ -156,10 +156,31 @@ pip install --require-hashes --no-deps -r requirements-dev.txt
 python -m pytest -q
 ```
 
+## Spending caps and call history
+
+Every request is also stored in a small SQLite database, `~/.arcade/metrics.db` (owner-only, metadata only: route, model, tokens, cost, latency; never prompt text). `logs/decisions.jsonl` stays as it is.
+
+Before any cloud call, Switchboard checks today's and this month's spend against your caps in `~/.arcade/budget.json` (defaults if the file is missing: $1/day, $15/month):
+
+```json
+{"daily_usd": 1.0, "monthly_usd": 15.0}
+```
+
+Over a cap, cloud models are skipped and the route's local model answers instead, the same way it would if the cloud model were down. The skip is logged in `failed_attempts`, so [Workflow Arcade](https://github.com/alexb-joat/workflow-arcade) shows it. A route with no local model returns `429 budget_exceeded` instead of a bill. Edits to the file apply on the next request, no restart needed.
+
+Spend is calculated from `~/.arcade/prices.json`, the same file Workflow Arcade reads (USD per million tokens, keyed by model name in `config.yaml`):
+
+```json
+{"claude-sonnet": {"input": 3.0, "output": 15.0}}
+```
+
+**A cloud model without a price counts as $0 toward the caps**, so add every cloud model you use. Local models always cost $0.
+
 ## Roadmap
 
 - [ ] Small local LLM as an optional classifier for ambiguous prompts
 - [ ] Learn from feedback: per-route model scores from thumbs up/down
+- [x] Daily and monthly spending caps with local fallback
 - [ ] Cost and latency budgets per route
 - [ ] Native Anthropic/Gemini adapters (today: their OpenAI-compatible endpoints)
 - [ ] Per-user keys and rate limits for team use

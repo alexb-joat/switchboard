@@ -1,4 +1,6 @@
 import json
+import tempfile
+from pathlib import Path
 
 import httpx
 import pytest
@@ -8,6 +10,7 @@ from switchboard.app import create_app
 from switchboard.config import ConfigError, parse_config
 from switchboard.router import RoutingError, SessionPins, decide
 from switchboard.security import assert_safe_bind, detect_sensitive
+from switchboard_metrics import BudgetCaps, BudgetGuard, MetricsDB, Prices
 
 pytestmark = pytest.mark.anyio
 
@@ -153,9 +156,20 @@ def test_bind_guard(monkeypatch):
 
 # ------------------------------------------------------------------ HTTP
 
-def make_client(handler, config=None):
+def make_client(handler, config=None, metrics=None, caps=None, prices=None):
+    # Always a throwaway DB, explicit caps and prices: tests must never touch ~/.arcade.
     transport = httpx.MockTransport(handler)
-    return TestClient(create_app(config or cfg(), transport=transport))
+    metrics = metrics or MetricsDB(Path(tempfile.mkdtemp()) / "metrics.db")
+    budget = BudgetGuard(metrics, caps or BudgetCaps())
+    prices = prices or Prices(Path(tempfile.mkdtemp()) / "prices.json")
+    return TestClient(create_app(config or cfg(), transport=transport,
+                                 metrics=metrics, budget=budget, prices=prices))
+
+
+def overspent_db():
+    db = MetricsDB(Path(tempfile.mkdtemp()) / "metrics.db")
+    db.record({"route": "code", "model": "big", "local": False, "status": 200, "cost": 5.0})
+    return db
 
 
 def ok(model):
@@ -285,3 +299,94 @@ def test_dotenv_loader(tmp_path, monkeypatch):
     assert "EMPTY_KEY" not in os.environ
     assert os.environ["CLOUD_KEY"] == "cloud-secret"  # existing env wins
     monkeypatch.delenv("NEW_KEY")
+
+
+# ------------------------------------------------------------------ metrics / budget
+
+def test_metrics_db_records_each_call():
+    db = MetricsDB(Path(tempfile.mkdtemp()) / "metrics.db")
+    c = make_client(lambda req: ok("x"), metrics=db)
+    c.post("/v1/chat/completions", json=body("hello"))
+    [row] = db.recent()
+    assert (row["route"], row["model"], row["local"], row["status"]) == ("quick", "small", 1, 200)
+
+
+def test_over_budget_skips_cloud_and_falls_back_to_local(tmp_path):
+    logf = tmp_path / "decisions.jsonl"
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.host)
+        return ok("x")
+
+    c = make_client(handler, cfg(logging={"path": str(logf)}), metrics=overspent_db())
+    r = c.post("/v1/chat/completions", json=body("python bug"))
+    assert r.status_code == 200
+    assert r.headers["x-switchboard-model"] == "coder"
+    assert seen == ["localhost"]  # cloud never contacted
+    [rec] = [json.loads(line) for line in logf.read_text().splitlines()]
+    [attempt] = rec["failed_attempts"]
+    assert attempt["model"] == "big" and attempt["error"] == "budget_blocked"
+    assert "daily cap" in attempt["reason"]
+
+
+def test_over_budget_without_local_fallback_returns_clear_error():
+    config = cfg(routes={"cloudy": {"models": ["big"]}}, default_route="cloudy")
+    c = make_client(lambda req: pytest.fail("cloud must not be called"), config,
+                    metrics=overspent_db())
+    r = c.post("/v1/chat/completions", json=body("hello"))
+    assert r.status_code == 429
+    assert r.json()["error"]["type"] == "budget_exceeded"
+    assert "daily cap" in r.json()["error"]["message"]
+
+
+def test_under_budget_cloud_is_used():
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.host)
+        return ok("x")
+
+    c = make_client(handler, metrics=overspent_db(), caps=BudgetCaps(daily_usd=10, monthly_usd=100))
+    assert c.post("/v1/chat/completions", json=body("python bug")).status_code == 200
+    assert seen == ["api.example.com"]
+
+
+def test_cloud_cost_recorded_from_prices_and_counts_toward_budget(tmp_path):
+    pf = tmp_path / "prices.json"
+    pf.write_text(json.dumps({"_note": "x", "big": {"input": 3.0, "output": 15.0}}))
+    db = MetricsDB(tmp_path / "metrics.db")
+
+    def handler(req):
+        r = ok("x").json()
+        r["usage"] = {"prompt_tokens": 1000, "completion_tokens": 100, "total_tokens": 1100}
+        return httpx.Response(200, json=r)
+
+    c = make_client(handler, metrics=db, prices=Prices(pf))
+    c.post("/v1/chat/completions", json=body("python bug"))   # cloud: big
+    c.post("/v1/chat/completions", json=body("hello"))        # local: small
+    rows = {r["model"]: r for r in db.recent()}
+    assert rows["big"]["cost"] == pytest.approx(0.0045)        # 1000*3/1e6 + 100*15/1e6
+    assert rows["small"]["cost"] == 0.0
+    assert db.spend_today() == pytest.approx(0.0045)
+
+
+def test_prices_reload_and_unpriced_is_none(tmp_path):
+    pf = tmp_path / "prices.json"
+    prices = Prices(pf)
+    use = {"prompt_tokens": 10, "completion_tokens": 10}
+    assert prices.cost("big", False, use) is None             # no file yet
+    pf.write_text(json.dumps({"big": {"input": 1, "output": 1}}))
+    assert prices.cost("big", False, use) == pytest.approx(0.00002)
+    assert prices.cost("big", False, None) is None             # no usage reported
+    assert prices.cost("other", True, None) == 0.0             # local is always free
+
+
+def test_budget_caps_reload_without_restart(tmp_path, monkeypatch):
+    import switchboard_metrics.guard as guard_mod
+    cap_file = tmp_path / "budget.json"
+    monkeypatch.setattr(guard_mod, "DEFAULT_CONFIG_PATH", cap_file)
+    guard = BudgetGuard(overspent_db())                        # $5 spent today
+    assert "daily cap" in guard.check()                        # default $1/day
+    cap_file.write_text(json.dumps({"daily_usd": 10, "monthly_usd": 100}))
+    assert guard.check() is None

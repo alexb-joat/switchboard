@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "switchboard"
-version = "0.1.0"
+version = "0.2.0"
 description = "Security-first LLM router: one OpenAI-compatible endpoint that picks the right model per prompt."
 readme = "README.md"
 license = "MIT"
@@ -25,7 +25,7 @@ Security = "https://github.com/alexb-joat/switchboard/security/policy"
 switchboard = "switchboard.__main__:main"
 
 [tool.setuptools]
-packages = ["switchboard"]
+packages = ["switchboard", "switchboard_metrics"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
