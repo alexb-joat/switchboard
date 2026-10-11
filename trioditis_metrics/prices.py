@@ -1,11 +1,11 @@
-"""Per-token prices for cloud models, from ~/.arcade/prices.json.
+"""Per-token prices for cloud models, from ~/.hlidskjalv/prices.json.
 
-Same file and format Workflow Arcade already reads, so one price list feeds
-both the Arcade's cost display and Switchboard's budget guard:
+Same file and format Hlidskjalv already reads, so one price list feeds
+both Hlidskjalv's cost display and Trioditis' budget guard:
 
     {"claude-sonnet": {"input": 3.0, "output": 15.0}}   # USD per 1M tokens
 
-Keys are Switchboard model names (config.yaml). Keys starting with "_" are
+Keys are Trioditis model names (config.yaml). Keys starting with "_" are
 notes. The file is re-read when it changes, so edits apply without a restart.
 """
 
@@ -15,7 +15,9 @@ import json
 import os
 from pathlib import Path
 
-DEFAULT_PRICES_PATH = Path(os.environ.get("ARCADE_HOME") or Path.home() / ".arcade") / "prices.json"
+from .home import data_home
+
+DEFAULT_PRICES_PATH = data_home() / "prices.json"
 
 
 class Prices:

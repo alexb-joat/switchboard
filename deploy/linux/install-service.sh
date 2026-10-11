@@ -1,12 +1,12 @@
 #!/usr/bin/env sh
-# Run Switchboard at login as a systemd *user* service (no root needed).
+# Run Trioditis at login as a systemd *user* service (no root needed).
 # Usage: ./deploy/linux/install-service.sh        Remove: ./deploy/linux/install-service.sh --remove
 set -eu
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-UNIT="$HOME/.config/systemd/user/switchboard.service"
+UNIT="$HOME/.config/systemd/user/trioditis.service"
 
 if [ "${1:-}" = "--remove" ]; then
-  systemctl --user disable --now switchboard 2>/dev/null || true
+  systemctl --user disable --now trioditis 2>/dev/null || true
   rm -f "$UNIT" && systemctl --user daemon-reload
   echo "removed"; exit 0
 fi
@@ -17,12 +17,12 @@ fi
 mkdir -p "$(dirname "$UNIT")"
 cat > "$UNIT" <<UNIT
 [Unit]
-Description=Switchboard LLM router (localhost only)
+Description=Trioditis LLM router (localhost only)
 After=network-online.target
 
 [Service]
 WorkingDirectory=$REPO
-ExecStart=$REPO/.venv/bin/python -m switchboard --config config.yaml serve --host 127.0.0.1 --port 8787
+ExecStart=$REPO/.venv/bin/python -m trioditis --config config.yaml serve --host 127.0.0.1 --port 8787
 Restart=on-failure
 RestartSec=5
 UMask=0077
@@ -37,5 +37,5 @@ MemoryMax=512M
 WantedBy=default.target
 UNIT
 systemctl --user daemon-reload
-systemctl --user enable --now switchboard
-echo "running. logs: journalctl --user -u switchboard -f"
+systemctl --user enable --now trioditis
+echo "running. logs: journalctl --user -u trioditis -f"

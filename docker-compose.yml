@@ -1,9 +1,9 @@
 services:
-  switchboard:
+  trioditis:
     build: .
     ports:
       - "127.0.0.1:8787:8787"     # reachable from this machine only
-    env_file: .env                 # SWITCHBOARD_API_KEY + provider keys; never committed
+    env_file: .env                 # TRIODITIS_API_KEY + provider keys; never committed
     volumes:
       - ./config.yaml:/config/config.yaml:ro
       - ./logs:/app/logs

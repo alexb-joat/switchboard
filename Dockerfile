@@ -7,7 +7,7 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     PIP_NO_CACHE_DIR=1 \
     PIP_DISABLE_PIP_VERSION_CHECK=1 \
     # metrics.db, budget.json, prices.json: the app user has no home, so keep them in the logs volume
-    ARCADE_HOME=/app/logs/arcade
+    HLIDSKJALV_HOME=/app/logs/hlidskjalv
 
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin app
 
@@ -16,8 +16,8 @@ COPY requirements.txt .
 # --require-hashes: every package must match the lockfile hash, or the build fails.
 RUN pip install --require-hashes --no-deps -r requirements.txt
 
-COPY switchboard ./switchboard
-COPY switchboard_metrics ./switchboard_metrics
+COPY trioditis ./trioditis
+COPY trioditis_metrics ./trioditis_metrics
 RUN mkdir -p /app/logs && chown app /app/logs
 
 USER 10001
@@ -26,5 +26,5 @@ EXPOSE 8787
 HEALTHCHECK --interval=30s --timeout=3s \
   CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8787/health', timeout=2)"
 
-# Binding 0.0.0.0 inside the container requires SWITCHBOARD_API_KEY (enforced at start).
-CMD ["python", "-m", "switchboard", "--config", "/config/config.yaml", "serve", "--host", "0.0.0.0", "--port", "8787"]
+# Binding 0.0.0.0 inside the container requires TRIODITIS_API_KEY (enforced at start).
+CMD ["python", "-m", "trioditis", "--config", "/config/config.yaml", "serve", "--host", "0.0.0.0", "--port", "8787"]

@@ -1,4 +1,4 @@
-# Switchboard config. Copy to config.yaml and edit.
+# Trioditis config. Copy to config.yaml and edit.
 # Secrets never go in this file: providers reference an env var (api_key_env).
 # A cloud provider whose env var is unset is simply skipped.
 

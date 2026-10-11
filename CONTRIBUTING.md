@@ -1,6 +1,6 @@
 # Contributing
 
-Thanks for helping. Switchboard sits between people and every model they use, so the bar for changes is "small, tested, and no new attack surface without a reason".
+Thanks for helping. Trioditis sits between people and every model they use, so the bar for changes is "small, tested, and no new attack surface without a reason".
 
 ## Workflow
 

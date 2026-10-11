@@ -41,12 +41,13 @@ def main() -> None:
     cfg = tmp / "config.yaml"
     cfg.write_text(CONFIG, encoding="utf-8")
     repo = Path(__file__).resolve().parent.parent
-    env = {**os.environ, "SWITCHBOARD_API_KEY": "", "SWITCHBOARD_ENV_FILE": str(tmp / "none"),
+    env = {**os.environ, "TRIODITIS_API_KEY": "", "TRIODITIS_ENV_FILE": str(tmp / "none"),
+           "HLIDSKJALV_HOME": str(tmp / "home"),  # never touch the real ~/.hlidskjalv
            "PYTHONPATH": str(repo)}
 
     # 1. Refuses to listen beyond localhost without a key.
     r = subprocess.run(
-        [sys.executable, "-m", "switchboard", "--config", str(cfg), "serve", "--host", "0.0.0.0"],
+        [sys.executable, "-m", "trioditis", "--config", str(cfg), "serve", "--host", "0.0.0.0"],
         env=env, capture_output=True, text=True, timeout=60,
     )
     assert r.returncode != 0 and "Refusing to bind" in r.stderr, r.stderr
@@ -54,7 +55,7 @@ def main() -> None:
     # 2. Serves on localhost.
     port = free_port()
     proc = subprocess.Popen(
-        [sys.executable, "-m", "switchboard", "--config", str(cfg), "serve", "--port", str(port)],
+        [sys.executable, "-m", "trioditis", "--config", str(cfg), "serve", "--port", str(port)],
         env=env, cwd=tmp,
     )
     base = f"http://127.0.0.1:{port}"

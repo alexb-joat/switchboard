@@ -8,6 +8,7 @@ import ipaddress
 import os
 import re
 
+from .envvars import env
 from .config import Privacy
 
 # Built-in detectors for data that should never leave the machine by accident.
@@ -68,7 +69,7 @@ def fingerprint(text: str) -> str:
 
 
 def router_api_key() -> str | None:
-    return os.environ.get("SWITCHBOARD_API_KEY") or None
+    return env("API_KEY") or None
 
 
 def check_bearer(header: str | None, expected: str) -> bool:
@@ -93,8 +94,8 @@ def assert_safe_bind(host: str) -> None:
     key = router_api_key()
     if not key:
         raise SystemExit(
-            f"Refusing to bind {host}: set SWITCHBOARD_API_KEY before exposing the "
+            f"Refusing to bind {host}: set TRIODITIS_API_KEY before exposing the "
             "router beyond localhost."
         )
     if len(key) < 32:
-        raise SystemExit("SWITCHBOARD_API_KEY must be at least 32 characters.")
+        raise SystemExit("TRIODITIS_API_KEY must be at least 32 characters.")

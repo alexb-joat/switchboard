@@ -5,10 +5,10 @@ import subprocess
 import httpx
 import pytest
 
-from switchboard import hardware as hwm
-from switchboard.hardware import (GB, GPU, Hardware, Installed, build_report, installed_models,
+from trioditis import hardware as hwm
+from trioditis.hardware import (GB, GPU, Hardware, Installed, build_report, installed_models,
                                   load_prices, memory_budget, route_kind, suggest)
-from tests.test_switchboard import cfg, make_client
+from tests.test_trioditis import cfg, make_client
 
 GiB = 2**30
 
@@ -28,8 +28,8 @@ def inst(name, gb, prov="local"):
 
 
 @pytest.fixture(autouse=True)
-def _no_arcade(tmp_path, monkeypatch):
-    monkeypatch.setenv("ARCADE_HOME", str(tmp_path))  # never read the real ~/.arcade
+def _private_home(tmp_path, monkeypatch):
+    monkeypatch.setenv("HLIDSKJALV_HOME", str(tmp_path))  # never read the real ~/.hlidskjalv
 
 
 # ------------------------------------------------------------------ budget rule
@@ -252,22 +252,22 @@ def test_hardware_endpoint(monkeypatch):
 
 
 def test_hardware_endpoint_requires_auth(monkeypatch):
-    monkeypatch.setenv("SWITCHBOARD_API_KEY", "router-key-" + "x" * 30)
+    monkeypatch.setenv("TRIODITIS_API_KEY", "router-key-" + "x" * 30)
     monkeypatch.setattr(hwm, "detect", lambda: ram_box())
     c = make_client(lambda req: httpx.Response(200, json=TAGS))
     assert c.get("/v1/hardware").status_code == 401
 
 
-def test_hardware_report_is_published_for_the_arcade(tmp_path, monkeypatch):
+def test_hardware_report_is_published_for_hlidskjalv(tmp_path, monkeypatch):
     """At startup the router writes the same report as /v1/hardware to a file (0600)."""
     import json as _json
     import os as _os
     from pathlib import Path as _Path
     import httpx as _httpx
     from fastapi.testclient import TestClient as _TC
-    from switchboard.app import create_app
-    from switchboard_metrics import BudgetCaps, BudgetGuard, MetricsDB, Prices
-    import switchboard.hardware as hwmod
+    from trioditis.app import create_app
+    from trioditis_metrics import BudgetCaps, BudgetGuard, MetricsDB, Prices
+    import trioditis.hardware as hwmod
 
     monkeypatch.setattr(hwmod, "detect", lambda: hwmod.Hardware(os="Linux", arch="x86_64", cpu="test", cores=4,
                                                                 ram_total=16 * hwmod.GB, ram_available=8 * hwmod.GB))

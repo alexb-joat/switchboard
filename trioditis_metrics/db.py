@@ -1,18 +1,18 @@
-"""SQLite-backed call history for Switchboard.
+"""SQLite-backed call history for Trioditis.
 
-Replaces the plain decisions.jsonl log with a queryable store, so Switchboard
+Replaces the plain decisions.jsonl log with a queryable store, so Trioditis
 can answer "how much have I spent today / this month" before making a cloud
-call, and so other tools (Workflow Arcade, future dashboards) can query
+call, and so other tools (Hlidskjalv, future dashboards) can query
 history without re-parsing a growing log file.
 
 Stdlib only (sqlite3) -- no new dependency, matching the rest of the stack.
 
-Usage inside Switchboard, once per process:
+Usage inside Trioditis, once per process:
 
-    from switchboard_metrics import MetricsDB
-    db = MetricsDB()  # defaults to ~/.arcade/metrics.db
+    from trioditis_metrics import MetricsDB
+    db = MetricsDB()  # defaults to ~/.hlidskjalv/metrics.db
 
-After each request completes (Switchboard already builds a dict with this
+After each request completes (Trioditis already builds a dict with this
 shape to write to decisions.jsonl -- pass that same object straight in):
 
     db.record({
@@ -34,7 +34,9 @@ import sqlite3
 import time
 from pathlib import Path
 
-DEFAULT_PATH = Path(os.environ.get("ARCADE_HOME") or Path.home() / ".arcade") / "metrics.db"
+from .home import data_home
+
+DEFAULT_PATH = data_home() / "metrics.db"
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS calls (
@@ -57,7 +59,7 @@ CREATE INDEX IF NOT EXISTS idx_calls_route ON calls(route);
 
 
 class MetricsDB:
-    """One connection per process. Safe for a single writer (Switchboard's
+    """One connection per process. Safe for a single writer (Trioditis's
     request handler) plus any number of read-only reporting queries run
     from elsewhere (a CLI report, a dashboard)."""
 

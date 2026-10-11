@@ -391,9 +391,10 @@ def installed_kinds(m: Installed) -> tuple[str, ...]:
 # ---------------------------------------------------------------- prices
 
 def load_prices(path: Path | None = None) -> dict[str, tuple[float, float]]:
-    """~/.arcade/prices.json as {"model": ($/Mtok in, $/Mtok out)}, via the shared reader."""
-    from switchboard_metrics.prices import Prices
-    p = path or Path(os.environ.get("ARCADE_HOME") or Path.home() / ".arcade") / "prices.json"
+    """~/.hlidskjalv/prices.json as {"model": ($/Mtok in, $/Mtok out)}, via the shared reader."""
+    from trioditis_metrics.home import data_home
+    from trioditis_metrics.prices import Prices
+    p = path or data_home() / "prices.json"
     out = {}
     for k, v in Prices(p).table().items():
         try:

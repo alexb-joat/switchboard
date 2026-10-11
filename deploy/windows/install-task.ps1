@@ -1,10 +1,10 @@
-# Run Switchboard at logon as a hidden Scheduled Task for the current user
+# Run Trioditis at logon as a hidden Scheduled Task for the current user
 # (no admin rights needed).
 # Usage:  powershell -ExecutionPolicy Bypass -File deploy\windows\install-task.ps1
 # Remove: powershell -ExecutionPolicy Bypass -File deploy\windows\install-task.ps1 -Remove
 param([switch]$Remove)
 $ErrorActionPreference = "Stop"
-$TaskName = "Switchboard LLM router"
+$TaskName = "Trioditis LLM router"
 $Repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 
 if ($Remove) {
@@ -18,7 +18,7 @@ if (-not (Test-Path (Join-Path $Repo "config.yaml"))) { throw "Create config.yam
 
 # pythonw.exe = no console window; output goes to logs\server.log.
 $Action = New-ScheduledTaskAction -Execute $Pythonw `
-    -Argument "-m switchboard --config config.yaml serve --host 127.0.0.1 --port 8787" `
+    -Argument "-m trioditis --config config.yaml serve --host 127.0.0.1 --port 8787" `
     -WorkingDirectory $Repo
 $Trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
 $Settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries `

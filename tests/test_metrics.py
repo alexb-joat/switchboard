@@ -4,8 +4,8 @@ import time
 import unittest
 from pathlib import Path
 
-from switchboard_metrics.db import MetricsDB
-from switchboard_metrics.guard import BudgetCaps, BudgetGuard
+from trioditis_metrics.db import MetricsDB
+from trioditis_metrics.guard import BudgetCaps, BudgetGuard
 
 
 def mk_db() -> MetricsDB:

@@ -1,13 +1,13 @@
 """Budget guard: decide whether a cloud call is allowed right now.
 
 Reads today's and this month's spend from MetricsDB and compares against
-caps loaded from ~/.arcade/budget.json (same convention as the existing
-~/.arcade/prices.json). Call `guard.check()` before dispatching to a cloud
+caps loaded from ~/.hlidskjalv/budget.json (same convention as the existing
+~/.hlidskjalv/prices.json). Call `guard.check()` before dispatching to a cloud
 provider; if it returns a reason (a string), skip the cloud call and fall
 back to a local model instead, and log the reason so it shows up as a
-"blocked -- over budget" event in Workflow Arcade.
+"blocked -- over budget" event in Hlidskjalv.
 
-Defaults: $1.00/day, $15.00/month. Edit ~/.arcade/budget.json to change
+Defaults: $1.00/day, $15.00/month. Edit ~/.hlidskjalv/budget.json to change
 them -- no code change or restart-time flag needed, just a file write:
 
     {"daily_usd": 1.0, "monthly_usd": 15.0}
@@ -20,9 +20,11 @@ import os
 from dataclasses import dataclass
 from pathlib import Path
 
+from .home import data_home
+
 from .db import MetricsDB
 
-DEFAULT_CONFIG_PATH = Path(os.environ.get("ARCADE_HOME") or Path.home() / ".arcade") / "budget.json"
+DEFAULT_CONFIG_PATH = data_home() / "budget.json"
 
 
 @dataclass

@@ -6,11 +6,11 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from switchboard.app import create_app
-from switchboard.config import ConfigError, parse_config
-from switchboard.router import RoutingError, SessionPins, decide
-from switchboard.security import assert_safe_bind, detect_sensitive
-from switchboard_metrics import BudgetCaps, BudgetGuard, MetricsDB, Prices
+from trioditis.app import create_app
+from trioditis.config import ConfigError, parse_config
+from trioditis.router import RoutingError, SessionPins, decide
+from trioditis.security import assert_safe_bind, detect_sensitive
+from trioditis_metrics import BudgetCaps, BudgetGuard, MetricsDB, Prices
 
 pytestmark = pytest.mark.anyio
 
@@ -53,6 +53,7 @@ def body(text, **kw):
 @pytest.fixture(autouse=True)
 def _env(monkeypatch):
     monkeypatch.setenv("CLOUD_KEY", "cloud-secret")
+    monkeypatch.delenv("TRIODITIS_API_KEY", raising=False)
     monkeypatch.delenv("SWITCHBOARD_API_KEY", raising=False)
 
 
@@ -147,17 +148,17 @@ def test_bind_guard(monkeypatch):
     assert_safe_bind("127.0.0.1")
     with pytest.raises(SystemExit):
         assert_safe_bind("0.0.0.0")
-    monkeypatch.setenv("SWITCHBOARD_API_KEY", "short")
+    monkeypatch.setenv("TRIODITIS_API_KEY", "short")
     with pytest.raises(SystemExit):
         assert_safe_bind("0.0.0.0")
-    monkeypatch.setenv("SWITCHBOARD_API_KEY", "x" * 40)
+    monkeypatch.setenv("TRIODITIS_API_KEY", "x" * 40)
     assert_safe_bind("0.0.0.0")
 
 
 # ------------------------------------------------------------------ HTTP
 
 def make_client(handler, config=None, metrics=None, caps=None, prices=None):
-    # Always a throwaway DB, explicit caps and prices: tests must never touch ~/.arcade.
+    # Always a throwaway DB, explicit caps and prices: tests must never touch ~/.hlidskjalv.
     transport = httpx.MockTransport(handler)
     metrics = metrics or MetricsDB(Path(tempfile.mkdtemp()) / "metrics.db")
     budget = BudgetGuard(metrics, caps or BudgetCaps())
@@ -189,13 +190,13 @@ def test_chat_routes_and_fallbacks():
 
     r = make_client(handler).post("/v1/chat/completions", json=body("python bug"))
     assert r.status_code == 200
-    assert r.headers["x-switchboard-model"] == "coder"
+    assert r.headers["x-trioditis-model"] == "coder"
     assert seen[0] == ("api.example.com", "big-1", "Bearer cloud-secret")
     assert seen[1] == ("localhost", "qwen-coder", None)  # local: no key sent
 
 
 def test_router_key_required_and_never_forwarded(monkeypatch):
-    monkeypatch.setenv("SWITCHBOARD_API_KEY", "router-key-" + "x" * 30)
+    monkeypatch.setenv("TRIODITIS_API_KEY", "router-key-" + "x" * 30)
     captured = {}
 
     def handler(req):
@@ -290,7 +291,7 @@ def test_no_docs_endpoints():
 
 
 def test_dotenv_loader(tmp_path, monkeypatch):
-    from switchboard.__main__ import load_dotenv
+    from trioditis.__main__ import load_dotenv
     env = tmp_path / ".env"
     env.write_text('# comment\nNEW_KEY="abc"\nEMPTY_KEY=\nCLOUD_KEY=override\nnot a line\nlower=x\n')
     loaded = load_dotenv(env)
@@ -322,7 +323,7 @@ def test_over_budget_skips_cloud_and_falls_back_to_local(tmp_path):
     c = make_client(handler, cfg(logging={"path": str(logf)}), metrics=overspent_db())
     r = c.post("/v1/chat/completions", json=body("python bug"))
     assert r.status_code == 200
-    assert r.headers["x-switchboard-model"] == "coder"
+    assert r.headers["x-trioditis-model"] == "coder"
     assert seen == ["localhost"]  # cloud never contacted
     [rec] = [json.loads(line) for line in logf.read_text().splitlines()]
     [attempt] = rec["failed_attempts"]
@@ -383,7 +384,7 @@ def test_prices_reload_and_unpriced_is_none(tmp_path):
 
 
 def test_budget_caps_reload_without_restart(tmp_path, monkeypatch):
-    import switchboard_metrics.guard as guard_mod
+    import trioditis_metrics.guard as guard_mod
     cap_file = tmp_path / "budget.json"
     monkeypatch.setattr(guard_mod, "DEFAULT_CONFIG_PATH", cap_file)
     guard = BudgetGuard(overspent_db())                        # $5 spent today
@@ -393,9 +394,35 @@ def test_budget_caps_reload_without_restart(tmp_path, monkeypatch):
 
 
 def test_refused_requests_are_logged_without_the_key(tmp_path, monkeypatch):
-    monkeypatch.setenv("SWITCHBOARD_API_KEY", "router-key-" + "x" * 30)
+    monkeypatch.setenv("TRIODITIS_API_KEY", "router-key-" + "x" * 30)
     c = make_client(lambda req: ok("x"), cfg(logging={"path": str(tmp_path / "decisions.jsonl")}))
     assert c.post("/v1/chat/completions", json=body("hi"), headers={"Authorization": "Bearer wrong-guess"}).status_code == 401
     [rec] = [json.loads(line) for line in (tmp_path / "security.jsonl").read_text().splitlines()]
     assert rec["path"] == "/v1/chat/completions" and rec["reason"] == "invalid or missing API key"
     assert "wrong-guess" not in (tmp_path / "security.jsonl").read_text()
+
+
+def test_old_env_names_still_work_for_now(monkeypatch):
+    from trioditis.envvars import env
+    monkeypatch.delenv("TRIODITIS_CONFIG", raising=False)
+    monkeypatch.setenv("SWITCHBOARD_CONFIG", "old.yaml")
+    assert env("CONFIG") == "old.yaml"
+    monkeypatch.setenv("TRIODITIS_CONFIG", "new.yaml")
+    assert env("CONFIG") == "new.yaml"
+
+
+def test_data_home_moves_once_and_leaves_a_link(tmp_path, monkeypatch):
+    import os
+    from trioditis_metrics.home import data_home, migrate_home
+    monkeypatch.delenv("HLIDSKJALV_HOME", raising=False)
+    monkeypatch.delenv("ARCADE_HOME", raising=False)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / ".arcade").mkdir()
+    (tmp_path / ".arcade" / "metrics.db").write_text("x")
+    assert data_home() == tmp_path / ".arcade"          # nothing moves on import or lookup
+    assert migrate_home() == tmp_path / ".hlidskjalv"
+    assert (tmp_path / ".hlidskjalv" / "metrics.db").read_text() == "x"
+    if os.name == "posix":
+        assert (tmp_path / ".arcade").is_symlink()       # old paths (shell hooks) keep working
+    assert migrate_home() == tmp_path / ".hlidskjalv"   # second time: nothing to do
+    assert data_home() == tmp_path / ".hlidskjalv"

@@ -1,9 +1,9 @@
 #!/usr/bin/env sh
-# Run Switchboard at login as a launchd agent (no root needed).
+# Run Trioditis at login as a launchd agent (no root needed).
 # Usage: ./deploy/macos/install-service.sh        Remove: ./deploy/macos/install-service.sh --remove
 set -eu
 REPO="$(cd "$(dirname "$0")/../.." && pwd)"
-LABEL="io.github.switchboard.router"
+LABEL="io.github.trioditis.router"
 PLIST="$HOME/Library/LaunchAgents/$LABEL.plist"
 DOMAIN="gui/$(id -u)"
 
@@ -27,7 +27,7 @@ cat > "$PLIST" <<PLIST
   <key>ProgramArguments</key>
   <array>
     <string>$REPO/.venv/bin/python</string>
-    <string>-m</string><string>switchboard</string>
+    <string>-m</string><string>trioditis</string>
     <string>--config</string><string>config.yaml</string>
     <string>serve</string>
     <string>--host</string><string>127.0.0.1</string>

@@ -13,9 +13,9 @@ body:
     validations: {required: true}
   - type: textarea
     id: repro
-    attributes: {label: Steps to reproduce, description: "Include `python -m switchboard explain \"...\"` output if it's a routing issue"}
+    attributes: {label: Steps to reproduce, description: "Include `python -m trioditis explain \"...\"` output if it's a routing issue"}
     validations: {required: true}
   - type: input
     id: env
-    attributes: {label: Environment, placeholder: "Kubuntu 24.04, Python 3.12, Switchboard 0.1.0"}
+    attributes: {label: Environment, placeholder: "Kubuntu 24.04, Python 3.12, Trioditis 0.1.0"}
     validations: {required: true}

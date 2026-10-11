@@ -1,4 +1,4 @@
-"""Command line entry point: python -m switchboard [serve|check|explain|hardware]."""
+"""Command line entry point: python -m trioditis [serve|check|explain|hardware]."""
 
 from __future__ import annotations
 
@@ -12,6 +12,7 @@ import re
 import stat
 from pathlib import Path
 
+from .envvars import env
 from .config import ConfigError, load_config
 from .security import assert_safe_bind
 
@@ -46,14 +47,14 @@ def load_dotenv(path: str | Path = ".env") -> list[str]:
 
 
 def main(argv: list[str] | None = None) -> None:
-    load_dotenv(os.environ.get("SWITCHBOARD_ENV_FILE", ".env"))
-    ap = argparse.ArgumentParser(prog="switchboard")
-    ap.add_argument("--config", default=os.environ.get("SWITCHBOARD_CONFIG", "config.yaml"))
+    load_dotenv(env("ENV_FILE", ".env"))
+    ap = argparse.ArgumentParser(prog="trioditis")
+    ap.add_argument("--config", default=env("CONFIG", "config.yaml"))
     sub = ap.add_subparsers(dest="cmd")
 
     s = sub.add_parser("serve", help="run the router (default)")
-    s.add_argument("--host", default=os.environ.get("SWITCHBOARD_HOST", "127.0.0.1"))
-    s.add_argument("--port", type=int, default=int(os.environ.get("SWITCHBOARD_PORT", "8787")))
+    s.add_argument("--host", default=env("HOST", "127.0.0.1"))
+    s.add_argument("--port", type=int, default=int(env("PORT", "8787")))
 
     sub.add_parser("check", help="validate the config and show which models are usable")
 
@@ -100,6 +101,8 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(rep, indent=2) if args.json else format_report(rep))
         return
 
+    from trioditis_metrics.home import migrate_home
+    migrate_home()  # ~/.arcade -> ~/.hlidskjalv, once (the pre-rename location)
     host = getattr(args, "host", "127.0.0.1")
     port = getattr(args, "port", 8787)
     assert_safe_bind(host)

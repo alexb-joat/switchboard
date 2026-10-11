@@ -1,7 +1,10 @@
-# Switchboard
+# Τριοδῖτις
 
-[![ci](https://github.com/alexb-joat/switchboard/actions/workflows/ci.yml/badge.svg)](https://github.com/alexb-joat/switchboard/actions/workflows/ci.yml)
-[![codeql](https://github.com/alexb-joat/switchboard/actions/workflows/codeql.yml/badge.svg)](https://github.com/alexb-joat/switchboard/actions/workflows/codeql.yml)
+*Trioditis*: Hecate of the three ways, who stands where the road splits and decides who goes where. Every prompt reaches the same crossroads here: a local model, a cloud model, or no further.
+
+
+[![ci](https://github.com/alexb-joat/trioditis/actions/workflows/ci.yml/badge.svg)](https://github.com/alexb-joat/trioditis/actions/workflows/ci.yml)
+[![codeql](https://github.com/alexb-joat/trioditis/actions/workflows/codeql.yml/badge.svg)](https://github.com/alexb-joat/trioditis/actions/workflows/codeql.yml)
 ![python](https://img.shields.io/badge/python-3.11%2B-3776AB)
 ![platforms](https://img.shields.io/badge/platform-linux%20%7C%20macOS%20%7C%20windows-555)
 [![license](https://img.shields.io/badge/license-MIT-green)](LICENSE)
@@ -9,7 +12,7 @@
 **One OpenAI-compatible endpoint that picks the right LLM for each prompt** — local models via Ollama, cloud models (Claude, GPT, anything on OpenRouter), and legacy models — with security as a design constraint, not an add-on.
 
 ```
-Any OpenAI-compatible app  ──►  Switchboard  ──►  local models (Ollama)
+Any OpenAI-compatible app  ──►  Trioditis  ──►  local models (Ollama)
 (Odysseus, Open WebUI,          model: "auto"      cloud APIs (Anthropic, OpenAI, OpenRouter)
  scripts, agents)                                  legacy models (by name)
 ```
@@ -27,7 +30,7 @@ Any OpenAI-compatible app  ──►  Switchboard  ──►  local models (Olla
 4. **Call the first model; fall back** to the next on outage, rate limit or missing model.
 5. **Session pinning** — requests carrying the same `X-Session-Id` (or `user`) stay on one route, so agents don't switch models mid-task.
 
-Every response carries `X-Switchboard-Route` and `X-Switchboard-Model`. `POST /v1/route` (or `switchboard explain "…"`) shows the decision and reasons without calling any model.
+Every response carries `X-Trioditis-Route` and `X-Trioditis-Model`. `POST /v1/route` (or `trioditis explain "…"`) shows the decision and reasons without calling any model.
 
 Clients can also bypass routing: `model: "route/code"` forces a route, `model: "legacy-mistral"` calls a model directly.
 
@@ -51,7 +54,7 @@ ollama pull qwen2.5-coder:7b
 ollama pull nomic-embed-text
 ```
 
-**2. Install Switchboard** (hash-verified: every package must match the lockfile).
+**2. Install Trioditis** (hash-verified: every package must match the lockfile).
 
 Linux / macOS:
 
@@ -75,8 +78,8 @@ Copy-Item .env.example .env
 **3. Check and run** (same on every OS):
 
 ```bash
-python -m switchboard check     # which models are usable
-python -m switchboard serve     # http://127.0.0.1:8787/v1, localhost only
+python -m trioditis check     # which models are usable
+python -m trioditis serve     # http://127.0.0.1:8787/v1, localhost only
 ```
 
 Add cloud API keys to `.env` only if you want cloud models; it's read automatically from the working directory, and variables already set in your environment take precedence.
@@ -87,14 +90,14 @@ Each script installs a per-user autostart (no admin/root), bound to localhost, a
 
 | OS | Command | Logs |
 |---|---|---|
-| Linux | `./deploy/linux/install-service.sh` | `journalctl --user -u switchboard -f` |
+| Linux | `./deploy/linux/install-service.sh` | `journalctl --user -u trioditis -f` |
 | macOS | `./deploy/macos/install-service.sh` | `logs/server.log` |
 | Windows | `powershell -ExecutionPolicy Bypass -File deploy\windows\install-task.ps1` | `logs\server.log` |
 
 ## Try it
 
 ```bash
-python -m switchboard explain "Why does my python function raise KeyError?"
+python -m trioditis explain "Why does my python function raise KeyError?"
 ```
 
 Linux / macOS:
@@ -113,7 +116,7 @@ Invoke-RestMethod http://127.0.0.1:8787/v1/chat/completions -Method Post -Conten
 
 Connect a UI: in Odysseus, Open WebUI or any OpenAI-compatible client, add the endpoint `http://127.0.0.1:8787/v1` and pick model `auto`.
 
-See every routing decision live: [Workflow Arcade](https://github.com/alexb-joat/workflow-arcade) reads the decision log (route, model, tokens; never prompts) and shows it as a game-like map of your work.
+See every routing decision live: [Hlidskjalv](https://github.com/alexb-joat/hlidskjalv) reads the decision log (route, model, tokens; never prompts) and shows it as a game-like map of your work.
 
 ## Docker (optional)
 
@@ -121,7 +124,7 @@ Running natively is simpler and keeps Ollama on localhost. If you want the conta
 
 ```bash
 cp config.example.yaml config.yaml   # set the ollama base_url to http://host.docker.internal:11434/v1
-cp .env.example .env                 # SWITCHBOARD_API_KEY is required inside a container
+cp .env.example .env                 # TRIODITIS_API_KEY is required inside a container
 docker compose up -d --build
 ```
 
@@ -158,17 +161,17 @@ python -m pytest -q
 
 ## Spending caps and call history
 
-Every request is also stored in a small SQLite database, `~/.arcade/metrics.db` (owner-only, metadata only: route, model, tokens, cost, latency; never prompt text). `logs/decisions.jsonl` stays as it is.
+Every request is also stored in a small SQLite database, `~/.hlidskjalv/metrics.db` (owner-only, metadata only: route, model, tokens, cost, latency; never prompt text). `logs/decisions.jsonl` stays as it is.
 
-Before any cloud call, Switchboard checks today's and this month's spend against your caps in `~/.arcade/budget.json` (defaults if the file is missing: $1/day, $15/month):
+Before any cloud call, Trioditis checks today's and this month's spend against your caps in `~/.hlidskjalv/budget.json` (defaults if the file is missing: $1/day, $15/month):
 
 ```json
 {"daily_usd": 1.0, "monthly_usd": 15.0}
 ```
 
-Over a cap, cloud models are skipped and the route's local model answers instead, the same way it would if the cloud model were down. The skip is logged in `failed_attempts`, so [Workflow Arcade](https://github.com/alexb-joat/workflow-arcade) shows it. A route with no local model returns `429 budget_exceeded` instead of a bill. Edits to the file apply on the next request, no restart needed.
+Over a cap, cloud models are skipped and the route's local model answers instead, the same way it would if the cloud model were down. The skip is logged in `failed_attempts`, so [Hlidskjalv](https://github.com/alexb-joat/hlidskjalv) shows it. A route with no local model returns `429 budget_exceeded` instead of a bill. Edits to the file apply on the next request, no restart needed.
 
-Spend is calculated from `~/.arcade/prices.json`, the same file Workflow Arcade reads (USD per million tokens, keyed by model name in `config.yaml`):
+Spend is calculated from `~/.hlidskjalv/prices.json`, the same file Hlidskjalv reads (USD per million tokens, keyed by model name in `config.yaml`):
 
 ```json
 {"claude-sonnet": {"input": 3.0, "output": 15.0}}
@@ -179,15 +182,15 @@ Spend is calculated from `~/.arcade/prices.json`, the same file Workflow Arcade 
 ## Hardware-aware suggestions
 
 ```bash
-python -m switchboard hardware          # readable report
-python -m switchboard hardware --json   # same data as GET /v1/hardware
+python -m trioditis hardware          # readable report
+python -m trioditis hardware --json   # same data as GET /v1/hardware
 ```
 
-Switchboard detects your CPU, RAM and GPU (NVIDIA via `nvidia-smi`, AMD via `/sys`, Apple Silicon via `sysctl`; stdlib only, every probe fails soft), lists the models installed in your local Ollama, and suggests per route where a local model could take work from a paid cloud model — with the reasoning spelled out:
+Trioditis detects your CPU, RAM and GPU (NVIDIA via `nvidia-smi`, AMD via `/sys`, Apple Silicon via `sysctl`; stdlib only, every probe fails soft), lists the models installed in your local Ollama, and suggests per route where a local model could take work from a paid cloud model — with the reasoning spelled out:
 
 - **Memory budget:** dedicated VRAM minus ~10% on a discrete GPU; ~65-75% of unified memory on Apple Silicon; otherwise 70% of RAM while keeping at least 4 GB for the OS (integrated GPUs share that RAM, so it is counted once). A model needs roughly its file size +20% for context.
 - **Cost first:** routes that start with a cloud model get a "put the local model first" suggestion (cloud stays as fallback); routes without a usable local model get the best one that fits, preferring models you already have (zero download). Configured models that won't fit are flagged with a smaller alternative.
-- **Honest numbers:** catalog sizes are approximate (check with `ollama show`); cloud prices are quoted only if `~/.arcade/prices.json` exists.
+- **Honest numbers:** catalog sizes are approximate (check with `ollama show`); cloud prices are quoted only if `~/.hlidskjalv/prices.json` exists.
 
 It prints YAML to paste and never edits `config.yaml`. Hardware facts never leave the machine: the only calls are `GET /api/tags` to your local providers. `GET /v1/hardware` sits behind the same API key as every other endpoint.
 
@@ -199,7 +202,7 @@ It prints YAML to paste and never edits `config.yaml`. Hardware facts never leav
 - [ ] Cost and latency budgets per route
 - [ ] Native Anthropic/Gemini adapters (today: their OpenAI-compatible endpoints)
 - [ ] Per-user keys and rate limits for team use
-- [x] Hardware detection and local-model suggestions (`switchboard hardware`)
+- [x] Hardware detection and local-model suggestions (`trioditis hardware`)
 
 ## Contributing
 
@@ -207,7 +210,7 @@ Pull requests are welcome — see [CONTRIBUTING.md](CONTRIBUTING.md). Report sec
 
 ## Support
 
-If Switchboard saves you money or time, you can support it with the **Sponsor** button at the top of the repo.
+If Trioditis saves you money or time, you can support it with the **Sponsor** button at the top of the repo.
 
 ## License
 

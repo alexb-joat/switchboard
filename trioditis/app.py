@@ -14,9 +14,11 @@ import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
-from switchboard_metrics import BudgetGuard, MetricsDB, Prices
+from trioditis_metrics import BudgetGuard, MetricsDB, Prices
+from trioditis_metrics.home import data_home
 
 from . import __version__
+from .envvars import env
 from .config import Config
 from .hardware import ReportCache
 from .router import Decision, Embedder, RoutingError, SessionPins, all_text, decide
@@ -26,7 +28,7 @@ from .security import check_bearer, fingerprint, router_api_key
 RETRYABLE = {404, 408, 409, 425, 429, 500, 502, 503, 504}
 
 
-DEFAULT_HARDWARE_FILE = Path(os.environ.get("ARCADE_HOME") or Path.home() / ".arcade") / "hardware.json"
+DEFAULT_HARDWARE_FILE = data_home() / "hardware.json"
 HARDWARE_EVERY_S = 600
 
 
@@ -62,7 +64,7 @@ class DecisionLog:
 
 
 class SecurityLog:
-    """Refused requests, next to the decision log (logs/security.jsonl). Workflow Arcade turns
+    """Refused requests, next to the decision log (logs/security.jsonl). Hlidskjalv turns
     these into alerts. Method, path, client address and reason only: never keys or bodies."""
 
     def __init__(self, decisions_path: str | None):
@@ -96,7 +98,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
     pins = SessionPins(cfg.limits.session_ttl_s)
     log = DecisionLog(cfg.logging.path, cfg.logging.log_prompts)
     security = SecurityLog(cfg.logging.path)
-    metrics = metrics or MetricsDB()  # one per process; ~/.arcade/metrics.db by default
+    metrics = metrics or MetricsDB()  # one per process; ~/.hlidskjalv/metrics.db by default
     budget = budget or BudgetGuard(metrics)
     prices = prices or Prices()
 
@@ -104,7 +106,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
     hardware_file = hardware_file or DEFAULT_HARDWARE_FILE
 
     async def publish_hardware():
-        """Keep ~/.arcade/hardware.json current so Workflow Arcade can show local-model
+        """Keep ~/.hlidskjalv/hardware.json current so Hlidskjalv can show local-model
         suggestions without needing this router's API key."""
         while True:
             try:
@@ -122,7 +124,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
         await client.aclose()
 
     # No interactive docs / schema endpoints: less surface, nothing to fingerprint.
-    app = FastAPI(title="switchboard", docs_url=None, redoc_url=None, openapi_url=None,
+    app = FastAPI(title="trioditis", docs_url=None, redoc_url=None, openapi_url=None,
                   lifespan=lifespan)
     app.state.cfg = cfg
 
@@ -165,9 +167,9 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
     @app.get("/v1/models")
     async def list_models():
         now = int(time.time())
-        data = [{"id": "auto", "object": "model", "created": now, "owned_by": "switchboard"}]
+        data = [{"id": "auto", "object": "model", "created": now, "owned_by": "trioditis"}]
         data += [
-            {"id": f"route/{r}", "object": "model", "created": now, "owned_by": "switchboard"}
+            {"id": f"route/{r}", "object": "model", "created": now, "owned_by": "trioditis"}
             for r in cfg.routes
         ]
         data += [
@@ -238,8 +240,8 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                 continue
 
             route_headers = {
-                "X-Switchboard-Route": d.route,
-                "X-Switchboard-Model": model,
+                "X-Trioditis-Route": d.route,
+                "X-Trioditis-Model": model,
             }
             local = prov.local
             if not stream:
@@ -348,7 +350,7 @@ def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body
     log.write(rec)
     try:
         # Cost goes to the metrics DB only; decisions.jsonl keeps its format
-        # (Workflow Arcade prices it itself from the same prices.json).
+        # (Hlidskjalv prices it itself from the same prices.json).
         metrics.record({**rec, "cost": prices.cost(model, local, usage)})
     except sqlite3.Error:
         pass  # metrics are best-effort; never fail (or break a stream) over them
@@ -356,4 +358,4 @@ def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body
 
 def app_from_env() -> FastAPI:
     from .config import load_config
-    return create_app(load_config(os.environ.get("SWITCHBOARD_CONFIG", "config.yaml")))
+    return create_app(load_config(env("CONFIG", "config.yaml")))
