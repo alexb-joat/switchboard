@@ -17,6 +17,7 @@ from switchboard_metrics import BudgetGuard, MetricsDB, Prices
 
 from . import __version__
 from .config import Config
+from .hardware import ReportCache
 from .router import Decision, Embedder, RoutingError, SessionPins, all_text, decide
 from .security import check_bearer, fingerprint, router_api_key
 
@@ -121,6 +122,13 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
             if cfg.provider_of(m).available()
         ]
         return {"object": "list", "data": data}
+
+    hw_cache = ReportCache()  # hardware once per process; installed models every 60 s
+
+    @app.get("/v1/hardware")
+    async def hardware():
+        """Hardware + local-model suggestions. Only local providers are queried."""
+        return await hw_cache.get(cfg, client)
 
     @app.post("/v1/route")
     async def explain(request: Request):

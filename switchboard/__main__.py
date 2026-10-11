@@ -1,4 +1,4 @@
-"""Command line entry point: python -m switchboard [serve|check|explain]."""
+"""Command line entry point: python -m switchboard [serve|check|explain|hardware]."""
 
 from __future__ import annotations
 
@@ -60,6 +60,9 @@ def main(argv: list[str] | None = None) -> None:
     e = sub.add_parser("explain", help="show which model a prompt would go to (no model call)")
     e.add_argument("prompt")
 
+    h = sub.add_parser("hardware", help="detect hardware and suggest local models (no config change)")
+    h.add_argument("--json", action="store_true", help="machine-readable output")
+
     args = ap.parse_args(argv)
     try:
         cfg = load_config(args.config)
@@ -81,6 +84,20 @@ def main(argv: list[str] | None = None) -> None:
         # Keyword/rule signals only here, so the CLI never calls any network service.
         d = asyncio.run(decide(cfg, body))
         print(json.dumps(d.as_dict(), indent=2))
+        return
+
+    if args.cmd == "hardware":
+        import httpx
+        from .hardware import build_report, detect, format_report, installed_models, load_prices
+
+        async def listed():
+            # Only local providers are queried (GET /api/tags); no proxy, no redirects.
+            async with httpx.AsyncClient(follow_redirects=False, trust_env=False) as c:
+                return await installed_models(cfg, c)
+
+        inst, errs = asyncio.run(listed())
+        rep = build_report(cfg, detect(), inst, errs, load_prices())
+        print(json.dumps(rep, indent=2) if args.json else format_report(rep))
         return
 
     host = getattr(args, "host", "127.0.0.1")
