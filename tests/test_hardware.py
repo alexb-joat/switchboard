@@ -256,3 +256,33 @@ def test_hardware_endpoint_requires_auth(monkeypatch):
     monkeypatch.setattr(hwm, "detect", lambda: ram_box())
     c = make_client(lambda req: httpx.Response(200, json=TAGS))
     assert c.get("/v1/hardware").status_code == 401
+
+
+def test_hardware_report_is_published_for_the_arcade(tmp_path, monkeypatch):
+    """At startup the router writes the same report as /v1/hardware to a file (0600)."""
+    import json as _json
+    import os as _os
+    from pathlib import Path as _Path
+    import httpx as _httpx
+    from fastapi.testclient import TestClient as _TC
+    from switchboard.app import create_app
+    from switchboard_metrics import BudgetCaps, BudgetGuard, MetricsDB, Prices
+    import switchboard.hardware as hwmod
+
+    monkeypatch.setattr(hwmod, "detect", lambda: hwmod.Hardware(os="Linux", arch="x86_64", cpu="test", cores=4,
+                                                                ram_total=16 * hwmod.GB, ram_available=8 * hwmod.GB))
+    out = tmp_path / "hardware.json"
+    db = MetricsDB(tmp_path / "m.db")
+    app = create_app(cfg(), transport=_httpx.MockTransport(lambda r: _httpx.Response(200, json={"models": []})),
+                     metrics=db, budget=BudgetGuard(db, BudgetCaps()), prices=Prices(tmp_path / "p.json"),
+                     hardware_file=out)
+    with _TC(app):
+        import time as _t
+        for _ in range(50):
+            if out.exists():
+                break
+            _t.sleep(0.05)
+    rep = _json.loads(out.read_text())
+    assert rep["hardware"]["cpu"] == "test" and "suggestions" in rep and rep["generated_at"] > 0
+    if _os.name == "posix":
+        assert out.stat().st_mode & 0o777 == 0o600

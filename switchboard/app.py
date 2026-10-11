@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import sqlite3
@@ -23,6 +24,19 @@ from .security import check_bearer, fingerprint, router_api_key
 
 # Upstream failures worth trying the next model for.
 RETRYABLE = {404, 408, 409, 425, 429, 500, 502, 503, 504}
+
+
+DEFAULT_HARDWARE_FILE = Path(os.environ.get("ARCADE_HOME") or Path.home() / ".arcade") / "hardware.json"
+HARDWARE_EVERY_S = 600
+
+
+def _write_private(path: Path, text: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(path.name + ".tmp")
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write(text)
+    os.replace(tmp, path)
 
 
 def _error(status: int, message: str, etype: str = "router_error") -> JSONResponse:
@@ -49,7 +63,7 @@ class DecisionLog:
 
 def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                metrics: MetricsDB | None = None, budget: BudgetGuard | None = None,
-               prices: Prices | None = None) -> FastAPI:
+               prices: Prices | None = None, hardware_file: Path | None = None) -> FastAPI:
     client = httpx.AsyncClient(
         transport=transport,
         timeout=httpx.Timeout(cfg.limits.upstream_timeout_s, connect=10.0),
@@ -63,9 +77,25 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
     budget = budget or BudgetGuard(metrics)
     prices = prices or Prices()
 
+    hw_cache = ReportCache()  # hardware once per process; installed models every 60 s
+    hardware_file = hardware_file or DEFAULT_HARDWARE_FILE
+
+    async def publish_hardware():
+        """Keep ~/.arcade/hardware.json current so Workflow Arcade can show local-model
+        suggestions without needing this router's API key."""
+        while True:
+            try:
+                rep = await hw_cache.get(cfg, client)
+                _write_private(hardware_file, json.dumps({**rep, "generated_at": time.time()}))
+            except Exception:  # best-effort: never take the router down over a report
+                pass
+            await asyncio.sleep(HARDWARE_EVERY_S)
+
     @asynccontextmanager
     async def lifespan(_app):
+        task = asyncio.create_task(publish_hardware())
         yield
+        task.cancel()
         await client.aclose()
 
     # No interactive docs / schema endpoints: less surface, nothing to fingerprint.
@@ -122,8 +152,6 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
             if cfg.provider_of(m).available()
         ]
         return {"object": "list", "data": data}
-
-    hw_cache = ReportCache()  # hardware once per process; installed models every 60 s
 
     @app.get("/v1/hardware")
     async def hardware():
