@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import sqlite3
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -11,6 +12,8 @@ from pathlib import Path
 import httpx
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
+
+from switchboard_metrics import BudgetGuard, MetricsDB, Prices
 
 from . import __version__
 from .config import Config
@@ -43,7 +46,9 @@ class DecisionLog:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -> FastAPI:
+def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
+               metrics: MetricsDB | None = None, budget: BudgetGuard | None = None,
+               prices: Prices | None = None) -> FastAPI:
     client = httpx.AsyncClient(
         transport=transport,
         timeout=httpx.Timeout(cfg.limits.upstream_timeout_s, connect=10.0),
@@ -53,6 +58,9 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
     embedder = Embedder(cfg, client) if cfg.embeddings else None
     pins = SessionPins(cfg.limits.session_ttl_s)
     log = DecisionLog(cfg.logging.path, cfg.logging.log_prompts)
+    metrics = metrics or MetricsDB()  # one per process; ~/.arcade/metrics.db by default
+    budget = budget or BudgetGuard(metrics)
+    prices = prices or Prices()
 
     @asynccontextmanager
     async def lifespan(_app):
@@ -137,9 +145,17 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
 
         stream = bool(body.get("stream"))
         attempts: list[dict] = []
+        blocked: str | None = None  # budget reason, checked once before the first cloud call
+        budget_checked = False
         for model in d.candidates:
             m = cfg.models[model]
             prov = cfg.providers[m.provider]
+            if not prov.local:
+                if not budget_checked:
+                    blocked, budget_checked = budget.check(), True
+                if blocked:
+                    attempts.append({"model": model, "error": "budget_blocked", "reason": blocked})
+                    continue
             upstream_body = dict(body)
             upstream_body["model"] = m.upstream_id
             upstream_body.pop("user", None)  # don't forward session ids upstream
@@ -169,12 +185,12 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
             if not stream:
                 content = resp.content
                 await resp.aclose()
-                _log(log, d, body, model, resp.status_code, attempts, started, sid,
+                _log(log, metrics, prices, d, body, model, resp.status_code, attempts, started, sid,
                      local=local, usage=_usage_from_json(content))
                 return _passthrough(resp, content, route_headers)
 
             def done(usage, _model=model, _status=resp.status_code, _local=local):
-                _log(log, d, body, _model, _status, attempts, started, sid,
+                _log(log, metrics, prices, d, body, _model, _status, attempts, started, sid,
                      local=_local, usage=usage)
 
             return StreamingResponse(
@@ -184,7 +200,12 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None) -
                 headers=route_headers,
             )
 
-        _log(log, d, body, None, 502, attempts, started, sid)
+        if blocked and not any(cfg.providers[cfg.models[mn].provider].local
+                               for mn in d.candidates):
+            _log(log, metrics, prices, d, body, None, 429, attempts, started, sid)
+            return _error(429, f"cloud budget exceeded: {blocked}; no local model "
+                               f"available for route {d.route}", "budget_exceeded")
+        _log(log, metrics, prices, d, body, None, 502, attempts, started, sid)
         return _error(502, f"all candidate models failed: {attempts}", "upstream_error")
 
     return app
@@ -243,8 +264,9 @@ async def _relay(resp: httpx.Response, on_done=None):
             on_done(_usage_from_sse(tail))
 
 
-def _log(log: DecisionLog, d: Decision, body: dict, model, status, attempts, started, sid,
-         local: bool | None = None, usage: dict | None = None) -> None:
+def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body: dict, model,
+         status, attempts, started, sid, local: bool | None = None,
+         usage: dict | None = None) -> None:
     text = all_text(body.get("messages") or [])
     rec = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -264,6 +286,12 @@ def _log(log: DecisionLog, d: Decision, body: dict, model, status, attempts, sta
     if log.log_prompts:
         rec["prompt"] = text
     log.write(rec)
+    try:
+        # Cost goes to the metrics DB only; decisions.jsonl keeps its format
+        # (Workflow Arcade prices it itself from the same prices.json).
+        metrics.record({**rec, "cost": prices.cost(model, local, usage)})
+    except sqlite3.Error:
+        pass  # metrics are best-effort; never fail (or break a stream) over them
 
 
 def app_from_env() -> FastAPI:
