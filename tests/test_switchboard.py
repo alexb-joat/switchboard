@@ -390,3 +390,12 @@ def test_budget_caps_reload_without_restart(tmp_path, monkeypatch):
     assert "daily cap" in guard.check()                        # default $1/day
     cap_file.write_text(json.dumps({"daily_usd": 10, "monthly_usd": 100}))
     assert guard.check() is None
+
+
+def test_refused_requests_are_logged_without_the_key(tmp_path, monkeypatch):
+    monkeypatch.setenv("SWITCHBOARD_API_KEY", "router-key-" + "x" * 30)
+    c = make_client(lambda req: ok("x"), cfg(logging={"path": str(tmp_path / "decisions.jsonl")}))
+    assert c.post("/v1/chat/completions", json=body("hi"), headers={"Authorization": "Bearer wrong-guess"}).status_code == 401
+    [rec] = [json.loads(line) for line in (tmp_path / "security.jsonl").read_text().splitlines()]
+    assert rec["path"] == "/v1/chat/completions" and rec["reason"] == "invalid or missing API key"
+    assert "wrong-guess" not in (tmp_path / "security.jsonl").read_text()

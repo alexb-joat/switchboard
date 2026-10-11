@@ -61,6 +61,28 @@ class DecisionLog:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
+class SecurityLog:
+    """Refused requests, next to the decision log (logs/security.jsonl). Workflow Arcade turns
+    these into alerts. Method, path, client address and reason only: never keys or bodies."""
+
+    def __init__(self, decisions_path: str | None):
+        self.path = Path(decisions_path).with_name("security.jsonl") if decisions_path else None
+
+    def write(self, request: Request, reason: str) -> None:
+        if not self.path:
+            return
+        rec = {"ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"), "method": request.method,
+               "path": request.url.path[:200], "client": request.client.host if request.client else None,
+               "reason": reason}
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+            with os.fdopen(fd, "a", encoding="utf-8") as f:
+                f.write(json.dumps(rec) + "\n")
+        except OSError:
+            pass
+
+
 def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                metrics: MetricsDB | None = None, budget: BudgetGuard | None = None,
                prices: Prices | None = None, hardware_file: Path | None = None) -> FastAPI:
@@ -73,6 +95,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
     embedder = Embedder(cfg, client) if cfg.embeddings else None
     pins = SessionPins(cfg.limits.session_ttl_s)
     log = DecisionLog(cfg.logging.path, cfg.logging.log_prompts)
+    security = SecurityLog(cfg.logging.path)
     metrics = metrics or MetricsDB()  # one per process; ~/.arcade/metrics.db by default
     budget = budget or BudgetGuard(metrics)
     prices = prices or Prices()
@@ -108,6 +131,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
         if request.url.path != "/health":
             key = router_api_key()
             if key and not check_bearer(request.headers.get("authorization"), key):
+                security.write(request, "invalid or missing API key")
                 return _error(401, "invalid or missing API key", "auth_error")
         if request.method == "POST":
             length = request.headers.get("content-length")
