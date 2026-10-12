@@ -77,7 +77,9 @@ def _gb(n: int | float | None) -> float | None:
 
 def _run(*args: str, timeout: float = 3.0) -> str | None:
     """Run a fixed command (no shell) and return stdout, or None on any failure."""
-    exe = shutil.which(args[0])
+    # System directories only: a fake nvidia-smi dropped into ~/.local/bin must not run here.
+    exe = shutil.which(args[0], path="/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/opt/homebrew/bin"
+                       if os.name != "nt" else None)
     if not exe:
         return None
     try:

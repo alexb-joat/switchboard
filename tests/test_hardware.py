@@ -146,14 +146,14 @@ def test_report_shape_and_prices_file(tmp_path):
 # ------------------------------------------------------------------ probes fail soft
 
 def test_run_fails_soft(monkeypatch):
-    monkeypatch.setattr(hwm.shutil, "which", lambda name: "/usr/bin/" + name)
+    monkeypatch.setattr(hwm.shutil, "which", lambda name, path=None: "/usr/bin/" + name)
 
     def boom(*a, **k):
         raise subprocess.TimeoutExpired("x", 3)
 
     monkeypatch.setattr(hwm.subprocess, "run", boom)
     assert hwm._run("nvidia-smi") is None and hwm._nvidia() == []
-    monkeypatch.setattr(hwm.shutil, "which", lambda name: None)
+    monkeypatch.setattr(hwm.shutil, "which", lambda name, path=None: None)
     assert hwm._run("nvidia-smi") is None
 
 
