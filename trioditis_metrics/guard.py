@@ -34,6 +34,8 @@ class BudgetCaps:
     # Optional caps per provider (the names from config.yaml), on top of the global ones:
     # {"openrouter": {"monthly_usd": 5.0}, "anthropic": {"daily_usd": 0.5}}
     providers: dict = field(default_factory=dict)
+    # What a cloud call without a price is assumed to have cost, so the caps still count it (0 = ignore).
+    assume_unpriced_usd: float = 0.0
 
     @classmethod
     def load(cls, path: Path | None = None) -> "BudgetCaps":
@@ -53,6 +55,7 @@ class BudgetCaps:
             daily_usd=_num(data.get("daily_usd"), cls.daily_usd),
             monthly_usd=_num(data.get("monthly_usd"), cls.monthly_usd),
             providers=providers,
+            assume_unpriced_usd=max(0.0, _num(data.get("assume_unpriced_usd"), 0.0)),
         )
 
 
@@ -74,16 +77,17 @@ class BudgetGuard:
         human-readable reason why it's blocked. With `provider`, that provider's
         own caps (if any) are checked too."""
         caps = self.caps
-        today = self.db.spend_today()
+        assume = caps.assume_unpriced_usd
+        today = self.db.spend_today() + self.db.unpriced_today() * assume
         if today >= caps.daily_usd:
             return f"daily cap reached (${today:.4f} >= ${caps.daily_usd:.2f})"
-        month = self.db.spend_this_month()
+        month = self.db.spend_this_month() + self.db.unpriced_this_month() * assume
         if month >= caps.monthly_usd:
             return f"monthly cap reached (${month:.4f} >= ${caps.monthly_usd:.2f})"
         own = caps.providers.get(provider or "")
         if own:
-            if "daily_usd" in own and (t := self.db.spend_today(provider=provider)) >= own["daily_usd"]:
+            if "daily_usd" in own and (t := self.db.spend_today(provider=provider) + self.db.unpriced_today(provider=provider) * assume) >= own["daily_usd"]:
                 return f"{provider} daily cap reached (${t:.4f} >= ${own['daily_usd']:.2f})"
-            if "monthly_usd" in own and (m := self.db.spend_this_month(provider=provider)) >= own["monthly_usd"]:
+            if "monthly_usd" in own and (m := self.db.spend_this_month(provider=provider) + self.db.unpriced_this_month(provider=provider) * assume) >= own["monthly_usd"]:
                 return f"{provider} monthly cap reached (${m:.4f} >= ${own['monthly_usd']:.2f})"
         return None

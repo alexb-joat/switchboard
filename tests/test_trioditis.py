@@ -561,3 +561,58 @@ def test_account_adapters(tmp_path, monkeypatch):
     # keys only ever go to the provider's own host, and the admin key only to the admin endpoints
     assert all(h in ("openrouter.ai", "api.anthropic.com", "api.openai.com") for h, _, _ in calls)
     assert [a for h, path, a in calls if path == "/api/v1/credits"] == ["Bearer sk-or-mgmt-xxxxxxxxxxxxxxxx"]
+
+
+def test_streaming_asks_for_usage_and_retries_without_it_once():
+    sse = b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"usage":{"prompt_tokens":3,"completion_tokens":1}}\n\ndata: [DONE]\n\n'
+    seen = []
+
+    class Chunks(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for part in sse.split(b"\n\n")[:-1]:
+                yield part + b"\n\n"
+
+    def handler(req):
+        sent = json.loads(req.content)
+        seen.append(sent.get("stream_options"))
+        if sent.get("stream_options"):
+            return httpx.Response(400, json={"error": {"message": "Unrecognized request argument supplied: stream_options"}})
+        return httpx.Response(200, stream=Chunks(), headers={"content-type": "text/event-stream"})
+
+    r = make_client(handler).post("/v1/chat/completions", json=body("hello", stream=True))
+    assert r.status_code == 200 and r.content == sse
+    assert seen == [{"include_usage": True}, None]  # asked once, then retried without
+
+    from dataclasses import replace
+    config = cfg()
+    for name, p in list(config.providers.items()):
+        config.providers[name] = replace(p, stream_usage=False)
+    seen.clear()
+    make_client(handler, config=config).post("/v1/chat/completions", json=body("hello", stream=True))
+    assert seen == [None]  # switched off per provider: never asked
+
+    def other_400(req):  # a 400 for another reason is passed through, not retried
+        seen.append(1)
+        return httpx.Response(400, json={"error": {"message": "max_tokens too large"}})
+    seen.clear()
+    r = make_client(other_400).post("/v1/chat/completions", json=body("hello", stream=True))
+    assert r.status_code == 400 and len(seen) == 1 and b"max_tokens" in r.content
+
+
+def test_unpriced_cloud_calls_are_recorded_and_can_count_toward_caps():
+    from trioditis_metrics.guard import BudgetCaps, BudgetGuard
+
+    def handler(req):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}],
+                                         "usage": {"prompt_tokens": 10, "completion_tokens": 5}})
+
+    tmp = Path(tempfile.mkdtemp())
+    metrics = MetricsDB(tmp / "metrics.db")
+    c = make_client(handler, config=cfg(), metrics=metrics)
+    assert c.post("/v1/chat/completions", json=body("fix my python script", model="route/code")).status_code == 200
+    rows = metrics.recent(5)
+    assert rows and rows[0]["unpriced"] == 1 and rows[0]["cost"] is None  # a cloud call, answered, no price known
+    assert metrics.unpriced_today() == 1
+    guard = BudgetGuard(metrics, BudgetCaps(daily_usd=1.0, assume_unpriced_usd=2.0))
+    assert "daily cap reached" in (guard.check("cloud") or "")
+    assert BudgetGuard(metrics, BudgetCaps(daily_usd=1.0)).check("cloud") is None  # default: unpriced counts $0, as documented

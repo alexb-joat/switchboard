@@ -51,7 +51,9 @@ CREATE TABLE IF NOT EXISTS calls (
     tokens_out  INTEGER,
     cost        REAL,
     fallbacks   INTEGER NOT NULL DEFAULT 0,
-    sensitive   TEXT NOT NULL DEFAULT '[]'
+    sensitive   TEXT NOT NULL DEFAULT '[]',
+    provider    TEXT,
+    unpriced    INTEGER NOT NULL DEFAULT 0   -- a cloud call with usage but no price in prices.json
 );
 CREATE INDEX IF NOT EXISTS idx_calls_ts ON calls(ts);
 CREATE INDEX IF NOT EXISTS idx_calls_route ON calls(route);
@@ -66,7 +68,8 @@ CREATE TABLE IF NOT EXISTS provider_limits (
 );
 """
 # Added after 0.2: older databases get it on open.
-MIGRATIONS = ["ALTER TABLE calls ADD COLUMN provider TEXT"]
+MIGRATIONS = ["ALTER TABLE calls ADD COLUMN provider TEXT",
+              "ALTER TABLE calls ADD COLUMN unpriced INTEGER NOT NULL DEFAULT 0"]
 
 
 class MetricsDB:
@@ -95,8 +98,8 @@ class MetricsDB:
         with self._conn:
             cur = self._conn.execute(
                 "INSERT INTO calls (ts, route, model, local, status, latency_ms, "
-                "tokens_in, tokens_out, cost, fallbacks, sensitive, provider) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "tokens_in, tokens_out, cost, fallbacks, sensitive, provider, unpriced) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     ts if ts is not None else time.time(),
                     str(decision.get("route") or "?")[:40],
@@ -110,6 +113,7 @@ class MetricsDB:
                     len(decision.get("failed_attempts") or []),
                     json.dumps([str(s)[:30] for s in (decision.get("sensitive") or [])][:10]),
                     str(decision["provider"])[:40] if decision.get("provider") else None,
+                    1 if decision.get("unpriced") else 0,
                 ),
             )
             return cur.lastrowid
@@ -121,6 +125,21 @@ class MetricsDB:
             sql += " AND provider = ?"
             args += (provider,)
         return float(self._conn.execute(sql, args).fetchone()["s"])
+
+    def unpriced_since(self, since_ts: float, provider: str | None = None) -> int:
+        """Cloud calls that answered but had no price: the caps can't see their cost."""
+        sql = "SELECT COUNT(*) AS n FROM calls WHERE ts >= ? AND local = 0 AND unpriced = 1"
+        args: tuple = (since_ts,)
+        if provider:
+            sql += " AND provider = ?"
+            args += (provider,)
+        return int(self._conn.execute(sql, args).fetchone()["n"])
+
+    def unpriced_today(self, now: float | None = None, provider: str | None = None) -> int:
+        return self.unpriced_since(_start_of_day(now), provider)
+
+    def unpriced_this_month(self, now: float | None = None, provider: str | None = None) -> int:
+        return self.unpriced_since(_start_of_month(now), provider)
 
     def spend_today(self, now: float | None = None, provider: str | None = None) -> float:
         return self.spend_since(_start_of_day(now), provider)

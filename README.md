@@ -17,7 +17,7 @@ Any OpenAI-compatible app  ──►  Trioditis  ──►  local models (Ollama
  scripts, agents)                                  legacy models (by name)
 ```
 
-~800 lines of Python. Four runtime dependencies (FastAPI, Uvicorn, HTTPX, PyYAML), hash-pinned. No LiteLLM, no LangChain, no telemetry.
+About 2,600 lines of Python. Four runtime dependencies (FastAPI, Uvicorn, HTTPX, PyYAML), hash-pinned. No LiteLLM, no LangChain, no telemetry.
 
 ## How a request is routed
 
@@ -177,7 +177,7 @@ Spend is calculated from `~/.hlidskjalv/prices.json`, the same file Hlidskjalv r
 {"claude-sonnet": {"input": 3.0, "output": 15.0}}
 ```
 
-**A cloud model without a price counts as $0 toward the caps**, so add every cloud model you use. Local models always cost $0.
+**A cloud model without a price counts as $0 toward the caps** unless you set `"assume_unpriced_usd": 0.05` (an assumed cost per such call) in `budget.json`; Hlidskjalv raises an alert when calls without a price happen, so add every cloud model you use. Streaming answers carry their token usage too: Trioditis asks the provider for it (OpenAI's `stream_options`) and retries once without for a provider that doesn't know the option, or set `stream_usage: false` on that provider. Local models always cost $0.
 
 **Caps per provider** go in the same file, under the provider names from `config.yaml`, on top of the global ones:
 

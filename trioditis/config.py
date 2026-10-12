@@ -36,6 +36,9 @@ class Provider:
     # Optional: an env var holding an *admin* key, only for reading this
     # provider's account spend (see accounts.py). Never used for requests.
     admin_key_env: str | None = None
+    # Streaming: ask for the usage block at the end (OpenAI's stream_options). Off for a provider
+    # that rejects the option (Trioditis also retries once without it when a 400 names it).
+    stream_usage: bool = True
 
     def api_key(self) -> str | None:
         if not self.api_key_env:
@@ -168,6 +171,7 @@ def parse_config(raw: dict) -> Config:
             api_key_env=p.get("api_key_env"),
             admin_key_env=p.get("admin_key_env"),
             local=bool(p.get("local", False)),
+            stream_usage=bool(p.get("stream_usage", True)),
         )
     if not providers:
         raise ConfigError("at least one provider is required")

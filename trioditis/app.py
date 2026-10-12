@@ -256,6 +256,8 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
             upstream_body = dict(body)
             upstream_body["model"] = m.upstream_id
             upstream_body.pop("user", None)  # don't forward session ids upstream
+            if stream and prov.stream_usage:  # usage comes in the last event; without it a priced call counts $0
+                upstream_body["stream_options"] = {**(upstream_body.get("stream_options") or {}), "include_usage": True}
             # Only our own headers go upstream: the client's Authorization (our
             # router key) must never be forwarded to a provider.
             headers = {"Content-Type": "application/json"}
@@ -268,6 +270,22 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
             except httpx.HTTPError as e:
                 attempts.append({"model": model, "error": type(e).__name__})
                 continue
+            if resp.status_code == 400 and stream and "stream_options" in upstream_body:
+                detail = await resp.aread()
+                await resp.aclose()
+                if b"stream_options" in detail:  # a provider that doesn't know the option: once more without it
+                    upstream_body.pop("stream_options", None)
+                    try:
+                        req = client.build_request("POST", url, json=upstream_body, headers=headers)
+                        resp = await client.send(req, stream=stream)
+                    except httpx.HTTPError as e:
+                        attempts.append({"model": model, "error": type(e).__name__})
+                        continue
+                else:  # a 400 for another reason: the client's problem, passed through as for a non-stream call
+                    _remember_limits(metrics, m.provider, resp.headers)
+                    _log(log, metrics, prices, d, body, model, 400, attempts, started, sid, local=prov.local,
+                         usage=_usage_from_json(detail), provider=m.provider)
+                    return _passthrough(resp, detail, {"X-Trioditis-Route": d.route, "X-Trioditis-Model": model})
             _remember_limits(metrics, m.provider, resp.headers)
 
             if resp.status_code in RETRYABLE:
@@ -397,7 +415,9 @@ def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body
     try:
         # Cost goes to the metrics DB only; decisions.jsonl keeps its format
         # (Hlidskjalv prices it itself from the same prices.json).
-        metrics.record({**rec, "cost": prices.cost(model, local, usage), "provider": provider})
+        cost = prices.cost(model, local, usage)
+        metrics.record({**rec, "cost": cost, "provider": provider,
+                        "unpriced": bool(local is False and cost is None and usage and isinstance(status, int) and status < 400)})
     except sqlite3.Error:
         pass  # metrics are best-effort; never fail (or break a stream) over them
 
