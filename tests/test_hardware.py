@@ -192,6 +192,63 @@ def test_detect_never_raises(monkeypatch):
     assert memory_budget(hw).bytes == 4 * GB
 
 
+def test_windows_probe_struct_and_registry(monkeypatch):
+    """Runs anywhere: fakes kernel32 and winreg to exercise the Windows probe end to end."""
+    import ctypes
+    import sys
+    import types
+
+    seen = {}
+
+    def global_memory_status_ex(ref):
+        st = ref._obj
+        # MEMORYSTATUSEX is 64 bytes on Windows (DWORD = 4 bytes there, 8 on Linux).
+        seen["dwLength"] = st.dwLength
+        st.ullTotalPhys, st.ullAvailPhys = 32 * GiB, 20 * GiB
+        return 1
+
+    kernel32 = types.SimpleNamespace(GlobalMemoryStatusEx=global_memory_status_ex)
+    monkeypatch.setattr(ctypes, "windll", types.SimpleNamespace(kernel32=kernel32), raising=False)
+
+    class Key:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    winreg = types.ModuleType("winreg")
+    winreg.HKEY_LOCAL_MACHINE = object()
+    winreg.OpenKey = lambda root, path: seen.setdefault("path", path) and Key()
+    winreg.QueryValueEx = lambda k, name: ("  AMD Ryzen 7 7840U w/ Radeon 780M Graphics  ", 1)
+    monkeypatch.setitem(sys.modules, "winreg", winreg)
+
+    cpu, total, avail = hwm._windows()
+    assert (cpu, total, avail) == ("AMD Ryzen 7 7840U w/ Radeon 780M Graphics", 32 * GiB, 20 * GiB)
+    assert seen["path"] == r"HARDWARE\DESCRIPTION\System\CentralProcessor\0"
+    assert seen["dwLength"] == 8 + 7 * 8 + (8 if ctypes.sizeof(ctypes.c_ulong) == 8 else 0)
+
+    # No registry access: falls back to platform.processor(), memory still reported.
+    winreg.OpenKey = lambda root, path: (_ for _ in ()).throw(OSError("denied"))
+    monkeypatch.setattr(hwm.platform, "processor", lambda: "Intel64 Family 6")
+    assert hwm._windows() == ("Intel64 Family 6", 32 * GiB, 20 * GiB)
+
+
+def test_detect_windows_branch(monkeypatch):
+    monkeypatch.setattr(hwm.platform, "system", lambda: "Windows")
+    monkeypatch.setattr(hwm.platform, "machine", lambda: "AMD64")
+    monkeypatch.setattr(hwm, "_windows", lambda: ("Ryzen", 16 * GB, 8 * GB))
+    monkeypatch.setattr(hwm, "_nvidia", lambda: [])
+    hw = hwm.detect()
+    assert (hw.os, hw.cpu, hw.ram_total, hw.ram_available) == ("Windows", "Ryzen", 16 * GB, 8 * GB)
+    assert hw.gpus == [] and any("only NVIDIA" in n for n in hw.notes)
+    assert memory_budget(hw).shared  # no discrete GPU found: budget comes from RAM
+
+    def boom():
+        raise OSError("no kernel32")
+
+    monkeypatch.setattr(hwm, "_windows", boom)
+    hw = hwm.detect()
+    assert hw.ram_total is None and any("windows probe failed" in n for n in hw.notes)
+
+
 # ------------------------------------------------------------------ installed models + HTTP
 
 TAGS = {"models": [
