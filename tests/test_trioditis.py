@@ -157,14 +157,16 @@ def test_bind_guard(monkeypatch):
 
 # ------------------------------------------------------------------ HTTP
 
-def make_client(handler, config=None, metrics=None, caps=None, prices=None):
+def make_client(handler, config=None, metrics=None, caps=None, prices=None, accounts_file=None):
     # Always a throwaway DB, explicit caps and prices: tests must never touch ~/.hlidskjalv.
     transport = httpx.MockTransport(handler)
-    metrics = metrics or MetricsDB(Path(tempfile.mkdtemp()) / "metrics.db")
+    tmp = Path(tempfile.mkdtemp())
+    metrics = metrics or MetricsDB(tmp / "metrics.db")
     budget = BudgetGuard(metrics, caps or BudgetCaps())
-    prices = prices or Prices(Path(tempfile.mkdtemp()) / "prices.json")
-    return TestClient(create_app(config or cfg(), transport=transport,
-                                 metrics=metrics, budget=budget, prices=prices))
+    prices = prices or Prices(tmp / "prices.json")
+    return TestClient(create_app(config or cfg(), transport=transport, metrics=metrics, budget=budget,
+                                 prices=prices, hardware_file=tmp / "hardware.json",
+                                 accounts_file=accounts_file or tmp / "accounts.json"))
 
 
 def overspent_db():
@@ -426,3 +428,136 @@ def test_data_home_moves_once_and_leaves_a_link(tmp_path, monkeypatch):
         assert (tmp_path / ".arcade").is_symlink()       # old paths (shell hooks) keep working
     assert migrate_home() == tmp_path / ".hlidskjalv"   # second time: nothing to do
     assert data_home() == tmp_path / ".hlidskjalv"
+
+
+# ------------------------------------------------------------------ rate limits, per-provider caps, accounts
+
+def test_ratelimit_headers_parse_all_three_families():
+    from trioditis_metrics.ratelimits import parse
+    now = 1_800_000_000.0
+    a = parse({"anthropic-ratelimit-requests-limit": "1000", "anthropic-ratelimit-requests-remaining": "999",
+               "anthropic-ratelimit-requests-reset": "2027-01-15T10:00:30Z",
+               "anthropic-ratelimit-input-tokens-remaining": "1999000", "content-type": "application/json"}, now)
+    from datetime import datetime, timezone
+    assert a["requests"] == {"limit": 1000, "remaining": 999,
+                             "reset_at": datetime(2027, 1, 15, 10, 0, 30, tzinfo=timezone.utc).timestamp()}
+    assert a["input_tokens"]["remaining"] == 1999000
+    o = parse({"x-ratelimit-limit-tokens": "30000", "x-ratelimit-remaining-tokens": "29000",
+               "x-ratelimit-reset-tokens": "6m0s", "x-ratelimit-reset-requests": "12ms"}, now)
+    assert o["tokens"] == {"limit": 30000, "remaining": 29000, "reset_at": now + 360}
+    assert o["requests"]["reset_at"] == pytest.approx(now + 0.012)
+    r = parse({"X-RateLimit-Limit": "20", "X-RateLimit-Remaining": "0", "X-RateLimit-Reset": str(int((now + 30) * 1000))}, now)
+    assert r["requests"] == {"limit": 20, "remaining": 0, "reset_at": now + 30}
+    assert parse({"x-ratelimit-limit-tokens": "-1"}, now) == {}  # Azure's "unknown"
+    assert parse({"content-type": "text/plain"}, now) == {}
+
+
+def test_old_metrics_db_gains_the_provider_column(tmp_path):
+    import sqlite3
+    db = tmp_path / "m.db"
+    con = sqlite3.connect(db)
+    con.execute("CREATE TABLE calls (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, route TEXT NOT NULL, "
+                "model TEXT NOT NULL, local INTEGER NOT NULL, status INTEGER, latency_ms INTEGER, tokens_in INTEGER, "
+                "tokens_out INTEGER, cost REAL, fallbacks INTEGER NOT NULL DEFAULT 0, sensitive TEXT NOT NULL DEFAULT '[]')")
+    con.execute("INSERT INTO calls (ts, route, model, local, cost) VALUES (1, 'code', 'big', 0, 0.5)")
+    con.commit(); con.close()
+    m = MetricsDB(db)
+    m.record({"route": "code", "model": "big", "local": False, "cost": 0.25, "provider": "cloud"})
+    assert m.spend_since(0) == pytest.approx(0.75)
+    assert m.spend_since(0, provider="cloud") == pytest.approx(0.25)
+    m.record_limits("cloud", {"requests": {"limit": 10, "remaining": 3, "reset_at": 5.0}})
+    m.record_limits("cloud", {"requests": {"limit": 10, "remaining": 2, "reset_at": 6.0}})
+    [row] = m.limits()
+    assert (row["provider"], row["name"], row["remaining"], row["reset_at"]) == ("cloud", "requests", 2, 6.0)
+
+
+def test_per_provider_caps(tmp_path):
+    cap_file = tmp_path / "budget.json"
+    cap_file.write_text(json.dumps({"daily_usd": 10, "monthly_usd": 100, "providers": {"cloud": {"daily_usd": 0.5}, "x": "junk"}}))
+    caps = BudgetCaps.load(cap_file)
+    assert caps.providers == {"cloud": {"daily_usd": 0.5}}
+    db = MetricsDB(tmp_path / "m.db")
+    db.record({"route": "code", "model": "big", "local": False, "cost": 0.6, "provider": "cloud"})
+    guard = BudgetGuard(db, caps)
+    assert guard.check() is None                         # global caps fine
+    assert guard.check("other") is None                  # no own caps
+    assert "cloud daily cap" in guard.check("cloud")     # its own cap hit
+
+
+def test_router_records_provider_and_rate_limits(tmp_path):
+    db = MetricsDB(tmp_path / "m.db")
+
+    def handler(req):
+        r = ok("x").json()
+        r["usage"] = {"prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15}
+        return httpx.Response(200, json=r, headers={"anthropic-ratelimit-requests-limit": "50",
+                                                     "anthropic-ratelimit-requests-remaining": "49",
+                                                     "anthropic-ratelimit-requests-reset": "2027-01-01T00:00:00Z"})
+    c = make_client(handler, metrics=db)
+    assert c.post("/v1/chat/completions", json=body("python bug")).status_code == 200
+    [row] = db.recent()
+    assert (row["model"], row["provider"]) == ("big", "cloud")
+    [lim] = db.limits()
+    assert (lim["provider"], lim["name"], lim["remaining"]) == ("cloud", "requests", 49)
+
+
+def test_provider_cap_blocks_only_that_provider(tmp_path):
+    db = MetricsDB(tmp_path / "m.db")
+    db.record({"route": "code", "model": "big", "local": False, "cost": 5.0, "provider": "cloud"})
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.host)
+        return ok("x")
+    c = make_client(handler, metrics=db, caps=BudgetCaps(daily_usd=100, monthly_usd=100, providers={"cloud": {"monthly_usd": 1}}))
+    r = c.post("/v1/chat/completions", json=body("python bug"))
+    assert r.status_code == 200 and r.headers["x-trioditis-model"] == "coder"
+    assert seen == ["localhost"]
+
+
+def test_account_adapters(tmp_path, monkeypatch):
+    monkeypatch.setenv("OR_KEY", "sk-or-xxxxxxxxxxxxxxxxxxxx")
+    monkeypatch.setenv("OR_ADMIN", "sk-or-mgmt-xxxxxxxxxxxxxxxx")
+    monkeypatch.setenv("ANTHROPIC_ADMIN", "sk-ant-admin01-xxxxxxxxxxxx")
+    monkeypatch.setenv("OPENAI_ADMIN", "sk-admin-xxxxxxxxxxxxxxxxxx")
+    monkeypatch.setenv("CLOUD_KEY", "cloud-secret")
+    config = cfg(providers={
+        "local": {"base_url": "http://localhost:11434/v1", "local": True},
+        "cloud": {"base_url": "https://api.example.com/v1", "api_key_env": "CLOUD_KEY"},
+        "openrouter": {"base_url": "https://openrouter.ai/api/v1", "api_key_env": "OR_KEY", "admin_key_env": "OR_ADMIN"},
+        "anthropic": {"base_url": "https://api.anthropic.com/v1", "api_key_env": "CLOUD_KEY", "admin_key_env": "ANTHROPIC_ADMIN"},
+        "openai": {"base_url": "https://api.openai.com/v1", "api_key_env": "CLOUD_KEY", "admin_key_env": "OPENAI_ADMIN"},
+        "nokey": {"base_url": "https://openrouter.ai/api/v1", "api_key_env": "UNSET_KEY_ENV"},
+    })
+    calls = []
+
+    def handler(req):
+        calls.append((req.url.host, req.url.path, req.headers.get("authorization") or req.headers.get("x-api-key")))
+        if req.url.path == "/api/v1/key":
+            return httpx.Response(200, json={"data": {"usage": 12.5, "usage_monthly": 3.25, "usage_daily": 0.1, "limit": 20,
+                                                       "limit_remaining": 7.5, "is_free_tier": False, "effective_budget": None}})
+        if req.url.path == "/api/v1/credits":
+            return httpx.Response(200, json={"data": {"total_credits": 100.5, "total_usage": 25.75}})
+        if req.url.path == "/v1/organizations/cost_report":
+            assert req.headers["anthropic-version"] == "2023-06-01"
+            return httpx.Response(200, json={"data": [{"results": [{"currency": "USD", "amount": "123.45"}, {"currency": "USD", "amount": "6.55"}]}],
+                                             "has_more": False})
+        if req.url.path == "/v1/organization/costs":
+            return httpx.Response(200, json={"data": [{"results": [{"amount": {"value": 0.42, "currency": "usd"}}]}], "has_more": False})
+        return httpx.Response(404)
+
+    out = tmp_path / "accounts.json"
+    c = make_client(handler, config, accounts_file=out)
+    r = c.get("/v1/accounts").json()
+    p = r["providers"]
+    assert p["openrouter"]["label"] == "OpenRouter balance" and p["openrouter"]["remaining"] == pytest.approx(74.75)
+    assert p["openrouter"]["used_month"] == 3.25
+    assert p["anthropic"] == {**p["anthropic"], "kind": "spend", "used": 1.3}      # cents -> dollars
+    assert p["openai"]["used"] == pytest.approx(0.42)
+    assert p["nokey"]["error"] == "no API key set"
+    assert p["cloud"]["error"].startswith("no adapter")
+    assert "local" not in p
+    assert json.loads(out.read_text())["providers"]["openai"]["used"] == pytest.approx(0.42)
+    # keys only ever go to the provider's own host, and the admin key only to the admin endpoints
+    assert all(h in ("openrouter.ai", "api.anthropic.com", "api.openai.com") for h, _, _ in calls)
+    assert [a for h, path, a in calls if path == "/api/v1/credits"] == ["Bearer sk-or-mgmt-xxxxxxxxxxxxxxxx"]

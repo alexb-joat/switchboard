@@ -179,6 +179,37 @@ Spend is calculated from `~/.hlidskjalv/prices.json`, the same file Hlidskjalv r
 
 **A cloud model without a price counts as $0 toward the caps**, so add every cloud model you use. Local models always cost $0.
 
+**Caps per provider** go in the same file, under the provider names from `config.yaml`, on top of the global ones:
+
+```json
+{"daily_usd": 1.0, "monthly_usd": 15.0, "providers": {"openrouter": {"monthly_usd": 5.0}, "anthropic": {"daily_usd": 0.5}}}
+```
+
+A provider over its own cap is skipped while the others stay available.
+
+## What providers report about your account
+
+There is no universal API for balances and limits, so Trioditis collects what each one offers and writes it to `~/.hlidskjalv/accounts.json` every 5 minutes (also `GET /v1/accounts`), for Hlidskjalv to show:
+
+| Provider (by host) | What you get | What it needs |
+|---|---|---|
+| openrouter.ai | The key's usage and limit, budgets; with a *management* key in `admin_key_env`, the account balance | the normal API key |
+| api.anthropic.com | This month's organization spend from the Admin cost report | an Admin API key (`sk-ant-admin…`) in `admin_key_env`; organizations only, individual accounts have no Admin API |
+| api.openai.com | This month's organization costs | an admin key in `admin_key_env` |
+| any other | nothing yet (an adapter is ~30 lines in `trioditis/accounts.py`) | |
+
+```yaml
+providers:
+  openrouter:
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+    admin_key_env: OPENROUTER_MANAGEMENT_KEY   # optional, read-only use
+```
+
+Admin keys are only ever sent to that provider's own host, with GET requests, and never used for model calls. Independently of adapters, the **rate-limit headers** every provider returns (requests and tokens remaining, when they refill) are kept per provider in the metrics database.
+
+Your Claude *subscription* (the 5-hour and weekly limits of a Pro/Max plan) is not reachable through an API key at all; Hlidskjalv estimates it from Claude Code's transcripts instead.
+
 ## Hardware-aware suggestions
 
 ```bash

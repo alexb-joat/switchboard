@@ -55,7 +55,18 @@ CREATE TABLE IF NOT EXISTS calls (
 );
 CREATE INDEX IF NOT EXISTS idx_calls_ts ON calls(ts);
 CREATE INDEX IF NOT EXISTS idx_calls_route ON calls(route);
+CREATE TABLE IF NOT EXISTS provider_limits (
+    provider    TEXT NOT NULL,
+    name        TEXT NOT NULL,      -- requests | tokens | input_tokens | output_tokens | ...
+    lim         INTEGER,
+    remaining   INTEGER,
+    reset_at    REAL,               -- epoch seconds, when the limit is fully replenished
+    seen        REAL NOT NULL,
+    PRIMARY KEY (provider, name)
+);
 """
+# Added after 0.2: older databases get it on open.
+MIGRATIONS = ["ALTER TABLE calls ADD COLUMN provider TEXT"]
 
 
 class MetricsDB:
@@ -70,6 +81,10 @@ class MetricsDB:
         self._conn.row_factory = sqlite3.Row
         with self._conn:
             self._conn.executescript(SCHEMA)
+            have = {r[1] for r in self._conn.execute("PRAGMA table_info(calls)")}
+            for stmt in MIGRATIONS:
+                if stmt.split("ADD COLUMN ")[1].split()[0] not in have:
+                    self._conn.execute(stmt)
         if os.name == "posix":
             os.chmod(self.path, 0o600)
 
@@ -80,8 +95,8 @@ class MetricsDB:
         with self._conn:
             cur = self._conn.execute(
                 "INSERT INTO calls (ts, route, model, local, status, latency_ms, "
-                "tokens_in, tokens_out, cost, fallbacks, sensitive) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                "tokens_in, tokens_out, cost, fallbacks, sensitive, provider) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     ts if ts is not None else time.time(),
                     str(decision.get("route") or "?")[:40],
@@ -94,22 +109,39 @@ class MetricsDB:
                     decision.get("cost"),
                     len(decision.get("failed_attempts") or []),
                     json.dumps([str(s)[:30] for s in (decision.get("sensitive") or [])][:10]),
+                    str(decision["provider"])[:40] if decision.get("provider") else None,
                 ),
             )
             return cur.lastrowid
 
-    def spend_since(self, since_ts: float) -> float:
-        row = self._conn.execute(
-            "SELECT COALESCE(SUM(cost), 0) AS s FROM calls WHERE ts >= ? AND local = 0",
-            (since_ts,),
-        ).fetchone()
-        return float(row["s"])
+    def spend_since(self, since_ts: float, provider: str | None = None) -> float:
+        sql = "SELECT COALESCE(SUM(cost), 0) AS s FROM calls WHERE ts >= ? AND local = 0"
+        args: tuple = (since_ts,)
+        if provider:
+            sql += " AND provider = ?"
+            args += (provider,)
+        return float(self._conn.execute(sql, args).fetchone()["s"])
 
-    def spend_today(self, now: float | None = None) -> float:
-        return self.spend_since(_start_of_day(now))
+    def spend_today(self, now: float | None = None, provider: str | None = None) -> float:
+        return self.spend_since(_start_of_day(now), provider)
 
-    def spend_this_month(self, now: float | None = None) -> float:
-        return self.spend_since(_start_of_month(now))
+    def spend_this_month(self, now: float | None = None, provider: str | None = None) -> float:
+        return self.spend_since(_start_of_month(now), provider)
+
+    def record_limits(self, provider: str, limits: dict[str, dict], seen: float | None = None) -> None:
+        """Keep the latest rate-limit snapshot a provider sent back: {name: {limit, remaining, reset_at}}."""
+        seen = seen if seen is not None else time.time()
+        with self._conn:
+            for name, v in limits.items():
+                self._conn.execute(
+                    "INSERT INTO provider_limits (provider, name, lim, remaining, reset_at, seen) VALUES (?,?,?,?,?,?) "
+                    "ON CONFLICT(provider, name) DO UPDATE SET lim=excluded.lim, remaining=excluded.remaining, "
+                    "reset_at=excluded.reset_at, seen=excluded.seen",
+                    (provider[:40], name[:40], v.get("limit"), v.get("remaining"), v.get("reset_at"), seen),
+                )
+
+    def limits(self) -> list[dict]:
+        return [dict(r) for r in self._conn.execute("SELECT * FROM provider_limits ORDER BY provider, name")]
 
     def recent(self, limit: int = 50) -> list[dict]:
         rows = self._conn.execute(

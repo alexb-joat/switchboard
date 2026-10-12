@@ -33,11 +33,17 @@ class Provider:
     base_url: str
     api_key_env: str | None = None
     local: bool = False  # True = data never leaves your machine/network
+    # Optional: an env var holding an *admin* key, only for reading this
+    # provider's account spend (see accounts.py). Never used for requests.
+    admin_key_env: str | None = None
 
     def api_key(self) -> str | None:
         if not self.api_key_env:
             return None
         return os.environ.get(self.api_key_env) or None
+
+    def admin_key(self) -> str | None:
+        return (os.environ.get(self.admin_key_env) or None) if self.admin_key_env else None
 
     def available(self) -> bool:
         """A cloud provider without its key is treated as not configured."""
@@ -150,6 +156,8 @@ def parse_config(raw: dict) -> Config:
     providers: dict[str, Provider] = {}
     for name, p in (raw.get("providers") or {}).items():
         _check_name("provider", name)
+        if "admin_key" in p:
+            raise ConfigError(f"provider {name}: put the admin key in an env var and use admin_key_env")
         if "api_key" in p:
             raise ConfigError(
                 f"provider {name}: put the key in an env var and use api_key_env"
@@ -158,6 +166,7 @@ def parse_config(raw: dict) -> Config:
             name=name,
             base_url=_check_url(name, p.get("base_url")),
             api_key_env=p.get("api_key_env"),
+            admin_key_env=p.get("admin_key_env"),
             local=bool(p.get("local", False)),
         )
     if not providers:

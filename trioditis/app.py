@@ -15,11 +15,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from trioditis_metrics import BudgetGuard, MetricsDB, Prices
+from trioditis_metrics.ratelimits import parse as parse_ratelimits
 from trioditis_metrics.home import data_home
 
 from . import __version__
 from .envvars import env
 from .config import Config
+from .accounts import ACCOUNTS_EVERY_S, adapter_for, report as account_report
 from .hardware import ReportCache
 from .router import Decision, Embedder, RoutingError, SessionPins, all_text, decide
 from .security import check_bearer, fingerprint, router_api_key
@@ -29,6 +31,7 @@ RETRYABLE = {404, 408, 409, 425, 429, 500, 502, 503, 504}
 
 
 DEFAULT_HARDWARE_FILE = data_home() / "hardware.json"
+DEFAULT_ACCOUNTS_FILE = data_home() / "accounts.json"
 HARDWARE_EVERY_S = 600
 
 
@@ -87,7 +90,8 @@ class SecurityLog:
 
 def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                metrics: MetricsDB | None = None, budget: BudgetGuard | None = None,
-               prices: Prices | None = None, hardware_file: Path | None = None) -> FastAPI:
+               prices: Prices | None = None, hardware_file: Path | None = None,
+               accounts_file: Path | None = None) -> FastAPI:
     client = httpx.AsyncClient(
         transport=transport,
         timeout=httpx.Timeout(cfg.limits.upstream_timeout_s, connect=10.0),
@@ -116,11 +120,33 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                 pass
             await asyncio.sleep(HARDWARE_EVERY_S)
 
+    accounts_file = accounts_file or DEFAULT_ACCOUNTS_FILE
+    accounts: dict = {"providers": {}, "generated_at": 0.0}
+
+    async def refresh_accounts() -> dict:
+        accounts["providers"] = await account_report(cfg, client)
+        accounts["generated_at"] = time.time()
+        _write_private(accounts_file, json.dumps(accounts))
+        return accounts
+
+    async def publish_accounts():
+        """Balances and spend from each provider's own account API, for Hlidskjalv. Only runs
+        when a cloud provider with an adapter and a key is configured; never affects routing."""
+        if not any(not p.local and p.available() and adapter_for(p) for p in cfg.providers.values()):
+            return
+        while True:
+            try:
+                await refresh_accounts()
+            except Exception:
+                pass
+            await asyncio.sleep(ACCOUNTS_EVERY_S)
+
     @asynccontextmanager
     async def lifespan(_app):
-        task = asyncio.create_task(publish_hardware())
+        tasks = [asyncio.create_task(publish_hardware()), asyncio.create_task(publish_accounts())]
         yield
-        task.cancel()
+        for t in tasks:
+            t.cancel()
         await client.aclose()
 
     # No interactive docs / schema endpoints: less surface, nothing to fingerprint.
@@ -179,6 +205,14 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
         ]
         return {"object": "list", "data": data}
 
+    @app.get("/v1/accounts")
+    async def accounts_view():
+        """Each cloud provider's own view of your account (balance, spend), freshly read."""
+        try:
+            return await refresh_accounts()
+        except Exception:
+            return accounts
+
     @app.get("/v1/hardware")
     async def hardware():
         """Hardware + local-model suggestions. Only local providers are queried."""
@@ -207,16 +241,17 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
 
         stream = bool(body.get("stream"))
         attempts: list[dict] = []
-        blocked: str | None = None  # budget reason, checked once before the first cloud call
-        budget_checked = False
+        blocked: str | None = None  # the global budget, checked once before the first cloud call
+        checked: dict[str, str | None] = {}  # provider -> block reason (global + that provider's own caps)
         for model in d.candidates:
             m = cfg.models[model]
             prov = cfg.providers[m.provider]
             if not prov.local:
-                if not budget_checked:
-                    blocked, budget_checked = budget.check(), True
-                if blocked:
-                    attempts.append({"model": model, "error": "budget_blocked", "reason": blocked})
+                if m.provider not in checked:
+                    checked[m.provider] = budget.check(m.provider)
+                    blocked = blocked or checked[m.provider]
+                if checked[m.provider]:
+                    attempts.append({"model": model, "error": "budget_blocked", "reason": checked[m.provider]})
                     continue
             upstream_body = dict(body)
             upstream_body["model"] = m.upstream_id
@@ -233,6 +268,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
             except httpx.HTTPError as e:
                 attempts.append({"model": model, "error": type(e).__name__})
                 continue
+            _remember_limits(metrics, m.provider, resp.headers)
 
             if resp.status_code in RETRYABLE:
                 attempts.append({"model": model, "status": resp.status_code})
@@ -248,12 +284,12 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                 content = resp.content
                 await resp.aclose()
                 _log(log, metrics, prices, d, body, model, resp.status_code, attempts, started, sid,
-                     local=local, usage=_usage_from_json(content))
+                     local=local, usage=_usage_from_json(content), provider=m.provider)
                 return _passthrough(resp, content, route_headers)
 
-            def done(usage, _model=model, _status=resp.status_code, _local=local):
+            def done(usage, _model=model, _status=resp.status_code, _local=local, _prov=m.provider):
                 _log(log, metrics, prices, d, body, _model, _status, attempts, started, sid,
-                     local=_local, usage=usage)
+                     local=_local, usage=usage, provider=_prov)
 
             return StreamingResponse(
                 _relay(resp, done),
@@ -326,9 +362,19 @@ async def _relay(resp: httpx.Response, on_done=None):
             on_done(_usage_from_sse(tail))
 
 
+def _remember_limits(metrics: MetricsDB, provider: str, headers) -> None:
+    """Rate-limit headers from an upstream response -> the metrics DB (Hlidskjalv shows them)."""
+    try:
+        limits = parse_ratelimits(headers)
+        if limits:
+            metrics.record_limits(provider, limits)
+    except (sqlite3.Error, ValueError, TypeError):
+        pass
+
+
 def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body: dict, model,
          status, attempts, started, sid, local: bool | None = None,
-         usage: dict | None = None) -> None:
+         usage: dict | None = None, provider: str | None = None) -> None:
     text = all_text(body.get("messages") or [])
     rec = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -351,7 +397,7 @@ def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body
     try:
         # Cost goes to the metrics DB only; decisions.jsonl keeps its format
         # (Hlidskjalv prices it itself from the same prices.json).
-        metrics.record({**rec, "cost": prices.cost(model, local, usage)})
+        metrics.record({**rec, "cost": prices.cost(model, local, usage), "provider": provider})
     except sqlite3.Error:
         pass  # metrics are best-effort; never fail (or break a stream) over them
 

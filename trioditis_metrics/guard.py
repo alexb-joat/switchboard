@@ -17,7 +17,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .home import data_home
@@ -31,6 +31,9 @@ DEFAULT_CONFIG_PATH = data_home() / "budget.json"
 class BudgetCaps:
     daily_usd: float = 1.0
     monthly_usd: float = 15.0
+    # Optional caps per provider (the names from config.yaml), on top of the global ones:
+    # {"openrouter": {"monthly_usd": 5.0}, "anthropic": {"daily_usd": 0.5}}
+    providers: dict = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path | None = None) -> "BudgetCaps":
@@ -41,10 +44,20 @@ class BudgetCaps:
             return cls()
         if not isinstance(data, dict):
             return cls()
+        providers = {}
+        for name, caps in (data.get("providers") or {}).items():
+            if isinstance(caps, dict):
+                providers[str(name)] = {k: float(caps[k]) for k in ("daily_usd", "monthly_usd")
+                                        if isinstance(caps.get(k), (int, float)) and not isinstance(caps.get(k), bool)}
         return cls(
-            daily_usd=float(data.get("daily_usd", cls.daily_usd)),
-            monthly_usd=float(data.get("monthly_usd", cls.monthly_usd)),
+            daily_usd=_num(data.get("daily_usd"), cls.daily_usd),
+            monthly_usd=_num(data.get("monthly_usd"), cls.monthly_usd),
+            providers=providers,
         )
+
+
+def _num(v, default: float) -> float:
+    return float(v) if isinstance(v, (int, float)) and not isinstance(v, bool) else default
 
 
 class BudgetGuard:
@@ -56,9 +69,10 @@ class BudgetGuard:
     def caps(self) -> BudgetCaps:
         return self._fixed or BudgetCaps.load()
 
-    def check(self) -> str | None:
+    def check(self, provider: str | None = None) -> str | None:
         """Returns None if a cloud call is allowed right now, or a short
-        human-readable reason why it's blocked."""
+        human-readable reason why it's blocked. With `provider`, that provider's
+        own caps (if any) are checked too."""
         caps = self.caps
         today = self.db.spend_today()
         if today >= caps.daily_usd:
@@ -66,4 +80,10 @@ class BudgetGuard:
         month = self.db.spend_this_month()
         if month >= caps.monthly_usd:
             return f"monthly cap reached (${month:.4f} >= ${caps.monthly_usd:.2f})"
+        own = caps.providers.get(provider or "")
+        if own:
+            if "daily_usd" in own and (t := self.db.spend_today(provider=provider)) >= own["daily_usd"]:
+                return f"{provider} daily cap reached (${t:.4f} >= ${own['daily_usd']:.2f})"
+            if "monthly_usd" in own and (m := self.db.spend_this_month(provider=provider)) >= own["monthly_usd"]:
+                return f"{provider} monthly cap reached (${m:.4f} >= ${own['monthly_usd']:.2f})"
         return None
