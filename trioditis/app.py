@@ -387,7 +387,9 @@ def _usage_from_sse(tail: bytes) -> dict | None:
 async def _relay(resp: httpx.Response, on_done=None):
     tail = b""
     try:
-        async for chunk in resp.aiter_raw():
+        # Decoded bytes: a provider may gzip its stream (Anthropic does), and we send only our own
+        # headers back, with no Content-Encoding, so the client must get plain SSE.
+        async for chunk in resp.aiter_bytes():
             tail = (tail + chunk)[-16384:]
             yield chunk
     finally:

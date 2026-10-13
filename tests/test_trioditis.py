@@ -740,3 +740,28 @@ def test_truncated_prompt_is_flagged_from_reported_usage(tmp_path):
     assert cut["prompt_truncated"] is True and any("OLLAMA_CONTEXT_LENGTH" in r for r in cut["reasons"])
     assert "prompt_truncated" not in fine and not any("cut" in r for r in fine["reasons"])
     assert c.post("/v1/chat/completions", json=body("hi")).status_code == 200  # a tiny prompt is never judged
+
+
+def test_gzipped_upstream_stream_reaches_the_client_decoded(tmp_path):
+    """Anthropic's streams arrive gzip-compressed. The router sends its own headers (no Content-Encoding),
+    so relaying the raw bytes gave Cline garbage ("stream ended without a finish reason") and no usage."""
+    import gzip
+    sse = (b'data: {"id":"c","choices":[{"index":0,"delta":{"role":"assistant","content":"hi"},"finish_reason":null}]}\n\n'
+           b'data: {"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"stop"}]}\n\n'
+           b'data: {"id":"c","choices":[],"usage":{"prompt_tokens":2100,"completion_tokens":7,"total_tokens":2107}}\n\n'
+           b'data: [DONE]\n\n')
+    packed = gzip.compress(sse)
+
+    class Chunks(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for i in range(0, len(packed), 16):
+                yield packed[i:i + 16]
+
+    def handler(req):
+        return httpx.Response(200, stream=Chunks(), headers={"content-type": "text/event-stream", "content-encoding": "gzip"})
+
+    c = make_client(handler, cfg(logging={"path": str(tmp_path / "decisions.jsonl")}))
+    r = c.post("/v1/chat/completions", json=body("hello", stream=True))
+    assert r.status_code == 200 and r.content == sse and "content-encoding" not in r.headers
+    [rec] = [json.loads(line) for line in (tmp_path / "decisions.jsonl").read_text().splitlines()]
+    assert rec["usage"] == {"prompt_tokens": 2100, "completion_tokens": 7, "total_tokens": 2107}
