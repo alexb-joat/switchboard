@@ -153,7 +153,8 @@ def main():
     r = request(args.url + "/chat/completions", first, key)
     ev, _ = read_sse(r, stop_after=2)
     check("client abort after 2 events", len(ev) >= 1)
-    r = request(args.url + "/chat/completions", {**first, "stream": False}, key)
+    plain = {k: v for k, v in first.items() if k != "stream_options"}  # strict providers refuse it without a stream
+    r = request(args.url + "/chat/completions", {**plain, "stream": False}, key)
     body = json.loads(r.read())
     check("non-stream request after the abort", r.status == 200 and body.get("choices") and body.get("usage"),
           f"usage={body.get('usage')}")
