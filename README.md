@@ -141,6 +141,7 @@ See [SECURITY.md](SECURITY.md) for the threat model. In short:
 |---|---|
 | Malicious/hijacked dependency | 4 direct deps, every package hash-pinned (`--require-hashes`), `pip-audit` in CI, Dependabot with a 7-day cooldown |
 | Router exposed to the network | Binds `127.0.0.1` by default; refuses any other bind without a ≥32-char API key |
+| A web page in your browser reaching the router | Without a key, requests with a foreign `Host` (DNS rebinding) or `Origin` (cross-site POST) get 403 and a line in `logs/security.jsonl`; POST bodies must be `application/json` |
 | Key leakage | Keys only in env vars (config loader rejects inline keys); client's router key is never forwarded upstream; local models get no key |
 | Sensitive data sent to the cloud by accident | Privacy detectors force local-only routing or reject |
 | Open proxy / SSRF | Upstream URLs only from config; plain `http` only for local hosts; redirects not followed |

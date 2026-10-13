@@ -164,9 +164,11 @@ def make_client(handler, config=None, metrics=None, caps=None, prices=None, acco
     metrics = metrics or MetricsDB(tmp / "metrics.db")
     budget = BudgetGuard(metrics, caps or BudgetCaps())
     prices = prices or Prices(tmp / "prices.json")
+    # base_url: the router answers only to its own names (127.0.0.1, localhost) without a key.
     return TestClient(create_app(config or cfg(), transport=transport, metrics=metrics, budget=budget,
                                  prices=prices, hardware_file=tmp / "hardware.json",
-                                 accounts_file=accounts_file or tmp / "accounts.json"))
+                                 accounts_file=accounts_file or tmp / "accounts.json"),
+                      base_url="http://127.0.0.1:8787")
 
 
 def overspent_db():
@@ -269,7 +271,7 @@ def test_all_fail_returns_502():
 def test_body_limit_and_bad_json():
     c = make_client(lambda r: ok("x"), cfg(limits={"max_body_bytes": 100}))
     assert c.post("/v1/chat/completions", json=body("a" * 500)).status_code == 413
-    assert c.post("/v1/chat/completions", content=b"not json").status_code == 400
+    assert c.post("/v1/chat/completions", content=b"not json", headers={"Content-Type": "application/json"}).status_code == 400
 
 
 def test_models_list_hides_unavailable(monkeypatch):
@@ -402,6 +404,41 @@ def test_refused_requests_are_logged_without_the_key(tmp_path, monkeypatch):
     [rec] = [json.loads(line) for line in (tmp_path / "security.jsonl").read_text().splitlines()]
     assert rec["path"] == "/v1/chat/completions" and rec["reason"] == "invalid or missing API key"
     assert "wrong-guess" not in (tmp_path / "security.jsonl").read_text()
+
+
+def test_browser_pages_cannot_reach_a_keyless_router(tmp_path, monkeypatch):
+    """No key means anyone on 127.0.0.1 is trusted, so a web page must not count as one:
+    DNS rebinding shows up as a foreign Host, a cross-site POST as a foreign Origin."""
+    from trioditis.security import host_header_is_local, origin_is_local
+    for good in ("127.0.0.1:8787", "localhost", "[::1]:8787", "trioditis.localhost:8787", "127.0.0.2"):
+        assert host_header_is_local(good), good
+    for bad in ("evil.example", "192.168.1.5:8787", "", None, "localhost.evil.example", "::1:8787"):
+        assert not host_header_is_local(bad), bad
+    assert origin_is_local("http://localhost:3000") and origin_is_local("https://127.0.0.1")
+    for bad in ("http://evil.example", "null", "file://", "", "http://localhost.evil.example"):
+        assert not origin_is_local(bad), bad
+
+    c = make_client(lambda req: ok("x"), cfg(logging={"path": str(tmp_path / "decisions.jsonl")}))
+    h = {"Host": "evil.example:8787"}
+    assert c.post("/v1/chat/completions", json=body("hi"), headers=h).status_code == 403
+    assert c.get("/health", headers=h).status_code == 403  # nothing answers a rebound page, not even health
+    assert c.post("/v1/chat/completions", json=body("hi"), headers={"Origin": "http://evil.example"}).status_code == 403
+    assert c.post("/v1/chat/completions", json=body("hi"), headers={"Origin": "http://localhost:3000"}).status_code == 200  # a local UI
+    assert c.post("/v1/chat/completions", json=body("hi")).status_code == 200  # a plain client sends no Origin
+    reasons = [json.loads(line)["reason"] for line in (tmp_path / "security.jsonl").read_text().splitlines()]
+    assert reasons == ["foreign host 'evil.example:8787'", "foreign host 'evil.example:8787'", "foreign origin 'http://evil.example'"]
+
+    # A form or text/plain POST is what a page can send without a CORS preflight: refused always.
+    r = c.post("/v1/chat/completions", content=json.dumps(body("hi")), headers={"Content-Type": "text/plain"})
+    assert r.status_code == 415 and "application/json" in r.text
+    assert c.post("/v1/chat/completions", content=json.dumps(body("hi")),
+                  headers={"Content-Type": "application/json; charset=utf-8"}).status_code == 200
+
+    # With a key, the key is the defence: a page cannot send it, and a remote UI that has it may call from anywhere.
+    monkeypatch.setenv("TRIODITIS_API_KEY", "router-key-" + "x" * 30)
+    auth = {"Authorization": "Bearer router-key-" + "x" * 30}
+    assert c.post("/v1/chat/completions", json=body("hi"), headers={**h, **auth, "Origin": "http://ui.example"}).status_code == 200
+    assert c.post("/v1/chat/completions", json=body("hi"), headers={**h, "Origin": "http://ui.example"}).status_code == 401
 
 
 def test_old_env_names_still_work_for_now(monkeypatch):

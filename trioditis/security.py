@@ -7,6 +7,7 @@ import hmac
 import ipaddress
 import os
 import re
+from urllib.parse import urlsplit
 
 from .envvars import env
 from .config import Privacy
@@ -85,6 +86,30 @@ def is_loopback(host: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
+
+
+def host_header_is_local(header: str | None) -> bool:
+    """True when a Host header names this computer: 127.0.0.1, [::1], localhost, *.localhost,
+    with or without a port. Anything else is a web page using DNS rebinding, or a name we
+    were never meant to answer to."""
+    if not header:
+        return False
+    try:
+        name = urlsplit("//" + header.strip()).hostname
+    except ValueError:
+        return False
+    return bool(name) and (is_loopback(name) or name.endswith(".localhost"))
+
+
+def origin_is_local(origin: str | None) -> bool:
+    """True when a browser's Origin header is a page served from this computer."""
+    if not origin:
+        return False
+    try:
+        parts = urlsplit(origin.strip())
+    except ValueError:
+        return False
+    return parts.scheme in ("http", "https") and host_header_is_local(parts.netloc)
 
 
 def assert_safe_bind(host: str) -> None:

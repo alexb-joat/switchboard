@@ -24,7 +24,7 @@ from .config import Config
 from .accounts import ACCOUNTS_EVERY_S, adapter_for, report as account_report
 from .hardware import ReportCache
 from .router import Decision, Embedder, RoutingError, SessionPins, all_text, decide
-from .security import check_bearer, fingerprint, router_api_key
+from .security import check_bearer, fingerprint, host_header_is_local, origin_is_local, router_api_key
 
 # Upstream failures worth trying the next model for.
 RETRYABLE = {404, 408, 409, 425, 429, 500, 502, 503, 504}
@@ -156,12 +156,28 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
 
     @app.middleware("http")
     async def guard(request: Request, call_next):
-        if request.url.path != "/health":
-            key = router_api_key()
-            if key and not check_bearer(request.headers.get("authorization"), key):
-                security.write(request, "invalid or missing API key")
-                return _error(401, "invalid or missing API key", "auth_error")
+        key = router_api_key()
+        if not key:
+            # Without a key the router answers anyone who can reach 127.0.0.1, and a web page
+            # open in the browser can: by DNS rebinding (a Host that isn't ours) or a plain
+            # cross-site POST (a foreign Origin). Refuse both. With a key set, a page cannot
+            # send it, so the key is the defence and remote UIs keep working.
+            host = request.headers.get("host")
+            if not host_header_is_local(host):
+                security.write(request, f"foreign host {str(host)[:100]!r}")
+                return _error(403, "forbidden host", "auth_error")
+            origin = request.headers.get("origin")
+            if origin is not None and not origin_is_local(origin):
+                security.write(request, f"foreign origin {origin[:100]!r}")
+                return _error(403, "forbidden origin", "auth_error")
+        elif request.url.path != "/health" and not check_bearer(request.headers.get("authorization"), key):
+            security.write(request, "invalid or missing API key")
+            return _error(401, "invalid or missing API key", "auth_error")
         if request.method == "POST":
+            ctype = (request.headers.get("content-type") or "").split(";")[0].strip().lower()
+            if ctype != "application/json":
+                security.write(request, f"content type {ctype[:60]!r}")
+                return _error(415, "Content-Type must be application/json")
             length = request.headers.get("content-length")
             if length and (not length.isdigit() or int(length) > cfg.limits.max_body_bytes):
                 return _error(413, "request body too large")
