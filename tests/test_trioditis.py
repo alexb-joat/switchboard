@@ -721,3 +721,22 @@ def test_cline_tools_skip_models_that_cannot_call_them():
     assert r.status_code == 200 and seen == ["llama3.2:3b"] and r.headers["X-Trioditis-Model"] == "small"
     d = make_client(handler).post("/v1/route", json=turn).json()
     assert "skip coder: no tool calling" in d["reasons"] and "no route model fits; using any capable model" in d["reasons"]
+
+
+def test_truncated_prompt_is_flagged_from_reported_usage(tmp_path):
+    """Ollama cuts a prompt past its context window without saying so; the only trace is a prompt_tokens
+    count far below what was sent. The decision log marks that, with a reason Hlidskjalv can show."""
+    reported = [120, 1300, 3]
+
+    def handler(req):
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}],
+                                         "usage": {"prompt_tokens": reported.pop(0), "completion_tokens": 5}})
+
+    c = make_client(handler, cfg(logging={"path": str(tmp_path / "decisions.jsonl")}))
+    turn = {**cline_turn(), "stream": False}  # ~1,500 tokens of system prompt and tools
+    assert c.post("/v1/chat/completions", json=turn).status_code == 200
+    assert c.post("/v1/chat/completions", json=turn).status_code == 200
+    cut, fine = [json.loads(line) for line in (tmp_path / "decisions.jsonl").read_text().splitlines()]
+    assert cut["prompt_truncated"] is True and any("OLLAMA_CONTEXT_LENGTH" in r for r in cut["reasons"])
+    assert "prompt_truncated" not in fine and not any("cut" in r for r in fine["reasons"])
+    assert c.post("/v1/chat/completions", json=body("hi")).status_code == 200  # a tiny prompt is never judged

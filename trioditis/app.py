@@ -425,6 +425,10 @@ def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body
         "local": local,
         "usage": usage,
     }
+    cut = _prompt_cut(text, body, usage)
+    if cut:
+        rec["prompt_truncated"] = True
+        rec["reasons"] = [*d.reasons, cut]  # Hlidskjalv shows reasons, so the user learns why the model "forgot"
     if log.log_prompts:
         rec["prompt"] = text
     log.write(rec)
@@ -436,6 +440,19 @@ def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body
                         "unpriced": bool(local is False and cost is None and usage and isinstance(status, int) and status < 400)})
     except sqlite3.Error:
         pass  # metrics are best-effort; never fail (or break a stream) over them
+
+
+def _prompt_cut(text: str, body: dict, usage: dict | None) -> str | None:
+    """A provider that reports far fewer prompt tokens than were sent has cut the prompt
+    (Ollama does so silently past its context window, 4,096 tokens by default)."""
+    reported = (usage or {}).get("prompt_tokens")
+    if not isinstance(reported, int):
+        return None
+    sent = (len(text) + len(json.dumps(body.get("tools") or []))) // 4
+    if sent >= 1000 and reported < sent * 0.5:
+        return (f"provider reported {reported} prompt tokens for about {sent} sent: the prompt was probably cut "
+                f"at the model's context window (Ollama: raise OLLAMA_CONTEXT_LENGTH)")
+    return None
 
 
 def app_from_env() -> FastAPI:
