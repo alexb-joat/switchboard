@@ -653,3 +653,71 @@ def test_unpriced_cloud_calls_are_recorded_and_can_count_toward_caps():
     guard = BudgetGuard(metrics, BudgetCaps(daily_usd=1.0, assume_unpriced_usd=2.0))
     assert "daily cap reached" in (guard.check("cloud") or "")
     assert BudgetGuard(metrics, BudgetCaps(daily_usd=1.0)).check("cloud") is None  # default: unpriced counts $0, as documented
+
+
+# ------------------------------------------------------------------ VS Code (Cline) shapes
+
+def cline_turn(name="first"):
+    return json.loads((Path(__file__).parent / "fixtures" / "cline_request.json").read_text())["turns"][name]
+
+
+def test_cline_request_streams_tool_calls_and_usage(tmp_path):
+    """What Cline 4.1 sends: a 4 KB system prompt, six tools with tool_choice auto, a short user line,
+    streaming with usage requested. The router must forward the tools, keep the stream intact,
+    log usage and never the prompt, and keep the client's key to itself."""
+    seen = []
+    sse = (b'data: {"id":"c","choices":[{"index":0,"delta":{"role":"assistant","tool_calls":[{"index":0,"id":"call_1",'
+           b'"type":"function","function":{"name":"editor","arguments":""}}]},"finish_reason":null}]}\n\n'
+           b'data: {"id":"c","choices":[{"index":0,"delta":{"tool_calls":[{"index":0,"function":{"arguments":'
+           b'"{\\"command\\":\\"create\\",\\"path\\":\\"hello.txt\\",\\"content\\":\\"hi\\\\n\\"}"}}]},"finish_reason":null}]}\n\n'
+           b'data: {"id":"c","choices":[{"index":0,"delta":{},"finish_reason":"tool_calls"}]}\n\n'
+           b'data: {"id":"c","choices":[],"usage":{"prompt_tokens":3200,"completion_tokens":40,"total_tokens":3240}}\n\n'
+           b'data: [DONE]\n\n')
+
+    class Chunks(httpx.AsyncByteStream):
+        async def __aiter__(self):
+            for i in range(0, len(sse), 64):
+                yield sse[i:i + 64]
+
+    def handler(req):
+        seen.append((req.url.path, req.headers.get("authorization"), json.loads(req.content)))
+        return httpx.Response(200, stream=Chunks(), headers={"content-type": "text/event-stream"})
+
+    c = make_client(handler, cfg(logging={"path": str(tmp_path / "decisions.jsonl")}))
+    turn = cline_turn()
+    r = c.post("/v1/chat/completions", json=turn, headers={"Authorization": "Bearer my-router-key", **{"User-Agent": "ai-sdk/openai-compatible/3.0.37"}})
+    assert r.status_code == 200 and r.content == sse  # the stream is relayed byte for byte, [DONE] included
+    assert r.headers["content-type"].startswith("text/event-stream")
+    assert r.headers["X-Trioditis-Route"] == "quick" and r.headers["X-Trioditis-Model"] == "small"  # 30 chars of task text: the default route, and small can call tools
+    path, auth, up = seen[0]
+    assert auth is None  # the client's router key never goes upstream
+    assert [t["function"]["name"] for t in up["tools"]] == [t["function"]["name"] for t in turn["tools"]]
+    assert up["tool_choice"] == "auto" and up["stream"] is True and up["stream_options"] == {"include_usage": True}
+    assert up["model"] == "llama3.2:3b" and len(up["messages"]) == 2 and up["messages"][0]["content"] == turn["messages"][0]["content"]
+    [rec] = [json.loads(line) for line in (tmp_path / "decisions.jsonl").read_text().splitlines()]
+    assert rec["usage"] == {"prompt_tokens": 3200, "completion_tokens": 40, "total_tokens": 3240}
+    assert "hello.txt" not in (tmp_path / "decisions.jsonl").read_text() and "ACT MODE" not in (tmp_path / "decisions.jsonl").read_text()
+    assert "tools present -> needs tool calling" in rec["reasons"]
+
+    # The follow-up turn carries the assistant's reply and a new user line; still one upstream call, same route.
+    r = c.post("/v1/chat/completions", json=cline_turn("followup"))
+    assert r.status_code == 200 and len(seen) == 2 and len(seen[1][2]["messages"]) == 4
+
+
+def test_cline_tools_skip_models_that_cannot_call_them():
+    """`coder` has no tools capability: with Cline's tools attached the code route must skip it, say why,
+    and fall through to any model that can call tools rather than send a request coder cannot honour."""
+    seen = []
+
+    def handler(req):
+        seen.append(json.loads(req.content)["model"])
+        return ok("x")
+
+    turn = {**cline_turn(), "model": "route/code", "stream": False}
+    turn["messages"][-1]["content"] = "fix the python bug in main.py"
+    import os
+    os.environ.pop("CLOUD_KEY", None)  # only local models: big (tools) is unavailable, coder has none
+    r = make_client(handler).post("/v1/chat/completions", json=turn)
+    assert r.status_code == 200 and seen == ["llama3.2:3b"] and r.headers["X-Trioditis-Model"] == "small"
+    d = make_client(handler).post("/v1/route", json=turn).json()
+    assert "skip coder: no tool calling" in d["reasons"] and "no route model fits; using any capable model" in d["reasons"]

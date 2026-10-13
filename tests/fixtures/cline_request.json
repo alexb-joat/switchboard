@@ -1,0 +1,335 @@
+{
+ "_about": "Request shapes Cline 4.1.23 (VS Code, OpenAI Compatible provider) sends; text is synthetic, lengths, roles, tags and tool names are real. Captured 2026-10-13.",
+ "headers": {
+  "user-agent": "ai-sdk/openai-compatible/3.0.37 ai-sdk/provider-utils/5.0.30 runtime/node.js/v24.21.0",
+  "accept": "*/*",
+  "content-type": "application/json"
+ },
+ "models_request_user_agent": "axios/1.18.0",
+ "turns": {
+  "first": {
+   "model": "auto",
+   "stream": true,
+   "stream_options": {
+    "include_usage": true
+   },
+   "tool_choice": "auto",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "read_files",
+      "description": "Read one or more files from the workspace.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "paths": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        }
+       },
+       "required": [
+        "paths"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "search_codebase",
+      "description": "Search files for a regular expression.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "pattern": {
+         "type": "string"
+        },
+        "path": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "pattern"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "fetch_web_content",
+      "description": "Fetch a web page as text.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "url"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "editor",
+      "description": "Create or edit a file.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "enum": [
+          "create",
+          "replace",
+          "insert"
+         ]
+        },
+        "path": {
+         "type": "string"
+        },
+        "content": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command",
+        "path"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "ask_question",
+      "description": "Ask the user a question.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "question": {
+         "type": "string"
+        },
+        "options": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        }
+       },
+       "required": [
+        "question"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_commands",
+      "description": "Run shell commands in the workspace.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "commands": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "requires_approval": {
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "commands"
+       ]
+      }
+     }
+    }
+   ],
+   "messages": [
+    {
+     "role": "system",
+     "content": "<env>\nWorking directory: /home/user/project\nShell: /bin/bash\nOS: Linux\nDate: 2026-10-13\n</env>\n<mode_notice>\nYou are in ACT MODE. Use the tools provided to complete the task.\n</mode_notice>\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call"
+    },
+    {
+     "role": "user",
+     "content": "create hello.txt with one line"
+    }
+   ]
+  },
+  "followup": {
+   "model": "auto",
+   "stream": true,
+   "stream_options": {
+    "include_usage": true
+   },
+   "tool_choice": "auto",
+   "tools": [
+    {
+     "type": "function",
+     "function": {
+      "name": "read_files",
+      "description": "Read one or more files from the workspace.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "paths": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        }
+       },
+       "required": [
+        "paths"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "search_codebase",
+      "description": "Search files for a regular expression.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "pattern": {
+         "type": "string"
+        },
+        "path": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "pattern"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "fetch_web_content",
+      "description": "Fetch a web page as text.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "url": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "url"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "editor",
+      "description": "Create or edit a file.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "command": {
+         "type": "string",
+         "enum": [
+          "create",
+          "replace",
+          "insert"
+         ]
+        },
+        "path": {
+         "type": "string"
+        },
+        "content": {
+         "type": "string"
+        }
+       },
+       "required": [
+        "command",
+        "path"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "ask_question",
+      "description": "Ask the user a question.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "question": {
+         "type": "string"
+        },
+        "options": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        }
+       },
+       "required": [
+        "question"
+       ]
+      }
+     }
+    },
+    {
+     "type": "function",
+     "function": {
+      "name": "run_commands",
+      "description": "Run shell commands in the workspace.",
+      "parameters": {
+       "type": "object",
+       "properties": {
+        "commands": {
+         "type": "array",
+         "items": {
+          "type": "string"
+         }
+        },
+        "requires_approval": {
+         "type": "boolean"
+        }
+       },
+       "required": [
+        "commands"
+       ]
+      }
+     }
+    }
+   ],
+   "messages": [
+    {
+     "role": "system",
+     "content": "<env>\nWorking directory: /home/user/project\nShell: /bin/bash\nOS: Linux\nDate: 2026-10-13\n</env>\n<mode_notice>\nYou are in ACT MODE. Use the tools provided to complete the task.\n</mode_notice>\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call before the next. Read files before editing them. Ask a question only when the task cannot proceed without an answer. When the task is complete, say so in one short paragraph.\nYou are a highly skilled software engineer with extensive knowledge in many programming languages, frameworks, design patterns and best practices. Use the tools step by step, waiting for the result of each call"
+    },
+    {
+     "role": "user",
+     "content": "create hello.txt with one line"
+    },
+    {
+     "role": "assistant",
+     "content": "<attempt_completion>\n<result>\nCaptured by the Trioditis test server. Nothing was changed.\n</result>\n</attempt_completion>"
+    },
+    {
+     "role": "user",
+     "content": "proceed"
+    }
+   ]
+  }
+ }
+}
