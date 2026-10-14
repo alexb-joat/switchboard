@@ -1,33 +1,37 @@
-# Security
+# Security policy
 
-## Threat model
+## Reporting a vulnerability
 
-Trioditis sits between your apps and every LLM you use, so it sees all prompts and holds all provider keys. The design assumes:
+Please report it **privately**: open the repository's **Security** tab and choose **Report a vulnerability**
+([direct link](https://github.com/alexb-joat/trioditis/security/advisories/new)). Please do not open a public issue.
 
-- **Dependencies can be hijacked** (as LiteLLM's PyPI package was on 2026-03-24). Mitigation: minimal dependency set, exact versions with hashes, install with `--require-hashes`, `pip-audit` on every push, Dependabot updates held 7 days before proposing.
-- **The network is hostile.** The server binds `127.0.0.1` by default and refuses to bind anything else unless `TRIODITIS_API_KEY` (≥32 chars) is set. Keys are compared in constant time. No docs/OpenAPI endpoints are exposed; `/health` returns nothing but `ok`.
-- **The browser is on the network too.** Without a key, anyone who can reach `127.0.0.1` is trusted, and a web page open in your browser can reach it: by DNS rebinding (its requests then carry a `Host` that is not ours) or by a plain cross-site POST (a foreign `Origin`). Both are refused with 403 and logged; `*.localhost` and loopback addresses are the only names the router answers to. POST bodies must be `application/json` (415 otherwise), so a form or `text/plain` request that needs no CORS preflight is refused as well. With a key set, the key is the defence: a page cannot send it, so remote UIs that hold it keep working from any origin.
-- **Prompts may contain secrets or personal data.** Built-in and custom detectors force local-only routing; if no local model fits, the request is rejected (`privacy.on_no_local_model: reject`). Embeddings must use a local provider, since embedding a prompt sends it somewhere.
-- **Clients are not trusted to choose destinations.** Upstream URLs come only from the config file. Plain `http` is only allowed for local hosts, URLs with embedded credentials are rejected, and HTTP redirects are not followed.
-- **Logs leak.** Decision logs contain metadata and a SHA-256 prefix of the prompt, never the prompt itself, unless `logging.log_prompts: true`. The log file is created with mode `0600`.
-- **Upstream providers are separate trust zones.** Each provider receives only its own key; the client's `Authorization` header and the session id are never forwarded.
+Include the version (`python -m trioditis --version`), your system, what you expected and what happened, and the
+smallest steps that reproduce it. Never include real API keys or prompts; a redacted log line is enough.
 
-## Not covered (yet)
+This is a small project with one maintainer. Expect an acknowledgement within a week; confirmed issues get a fix or a
+documented mitigation as soon as practical, and reporters are credited unless they prefer not to be.
 
-- Multi-user isolation and per-user rate limits (single shared key today).
-- Prompt-injection defence for the *content* of responses — Trioditis routes, it does not inspect model output.
-- TLS termination: put a reverse proxy (Caddy, Tailscale) in front before exposing beyond localhost.
-- Detectors are pattern-based and will miss some sensitive data; treat them as a safety net, not a guarantee.
+## Supported versions
 
-## Operating checklist
+Fixes land on `main` and ship in the next release. Please reproduce on the latest release or `main` first.
 
-- Generate the API key with `python -c "import secrets; print(secrets.token_urlsafe(32))"`.
-- Keep `.env` and `config.yaml` out of Git (already in `.gitignore`).
-- Protect `.env`: `chmod 600 .env` on Linux/macOS (Trioditis warns if others can read it); on Windows keep the repo inside your user profile, whose permissions already exclude other users.
-- Pin the Docker base image to a digest before deploying.
-- Enable GitHub secret scanning and push protection on the repository.
-- Rotate any provider key that was ever pasted into a chat, screenshot or log.
+## In scope
 
-## Reporting
+Anything that lets someone who is not the owner use the router or read what it holds: bypassing the API key, the
+`Host` / `Origin` checks or the body limits; getting a provider key, a prompt or the client's key into a log, a
+response or an upstream request; making Trioditis call a destination that is not in `config.yaml`; a flaw in the
+local-only guarantee for sensitive prompts; or a weakness in the install, container or CI supply chain.
 
-Please report vulnerabilities privately via GitHub Security Advisories rather than public issues.
+## Out of scope
+
+Someone who already has your user account or your `.env`; prompts the pattern-based detectors do not recognise (they
+are a safety net, and new patterns are welcome as ordinary pull requests); weaknesses in a model provider's own API;
+exposing the router beyond localhost without TLS and a key, against the documentation.
+
+## Running it safely
+
+- Keep it on `127.0.0.1`. If you must expose it, set `TRIODITIS_API_KEY` (32+ characters) and put TLS in front.
+- Keep `.env` private (`chmod 600`) and out of Git; rotate any provider key that ever appeared in a chat or log.
+- Install with `--require-hashes` from the lockfile, as in the README.
+
+The design, its controls and its limits are described in [docs/security-model.md](docs/security-model.md).

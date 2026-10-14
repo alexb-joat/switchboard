@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 880 190" width="880" height="190" role="img" aria-label="Trioditis: one endpoint, the right model for every prompt">
+  <g fill="none" stroke-width="3" stroke-linecap="round">
+    <path d="M24 95 H92" stroke="#a3a39d"/>
+    <path d="M92 95 C120 95 126 40 168 40" stroke="#63e6be"/>
+    <path d="M92 95 H168" stroke="#8ea6ff"/>
+    <path d="M92 95 C120 95 126 150 168 150" stroke="#a3a39d" stroke-dasharray="2 7"/>
+  </g>
+  <circle cx="92" cy="95" r="9" fill="#ececea"/>
+  <circle cx="176" cy="40" r="9" fill="#63e6be"/>
+  <circle cx="176" cy="95" r="9" fill="#8ea6ff"/>
+  <circle cx="176" cy="150" r="9" fill="none" stroke="#a3a39d" stroke-width="3"/>
+  <path d="M171 145 L181 155 M181 145 L171 155" stroke="#a3a39d" stroke-width="2.4" stroke-linecap="round"/>
+  <text x="232" y="96" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="60" font-weight="700" fill="#ececea" letter-spacing="1">Τριοδῖτις</text>
+  <text x="234" y="136" font-family="ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif" font-size="22" fill="#a3a39d">One endpoint. The right model for every prompt.</text>
+  <text x="234" y="166" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#a3a39d"><tspan fill="#63e6be">● local</tspan>   <tspan fill="#8ea6ff">● cloud</tspan>   ○ or no further</text>
+</svg>

@@ -12,6 +12,7 @@ import re
 import stat
 from pathlib import Path
 
+from . import __version__
 from .envvars import env
 from .config import ConfigError, load_config
 from .security import assert_safe_bind
@@ -50,6 +51,7 @@ def main(argv: list[str] | None = None) -> None:
     load_dotenv(env("ENV_FILE", ".env"))
     ap = argparse.ArgumentParser(prog="trioditis")
     ap.add_argument("--config", default=env("CONFIG", "config.yaml"))
+    ap.add_argument("--version", action="version", version=f"trioditis {__version__}")
     sub = ap.add_subparsers(dest="cmd")
 
     s = sub.add_parser("serve", help="run the router (default)")

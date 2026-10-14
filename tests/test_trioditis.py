@@ -802,3 +802,12 @@ def test_logs_rotate_once_at_their_cap(tmp_path):
     for _ in range(10):
         sec.write(req, "invalid or missing API key")
     assert (tmp_path / "security.jsonl.1").exists()
+
+
+def test_version_flag_names_the_release(capsys):
+    import pytest
+    from trioditis import __version__
+    from trioditis.__main__ import main
+    with pytest.raises(SystemExit) as e:
+        main(["--version"])
+    assert e.value.code == 0 and f"trioditis {__version__}" in capsys.readouterr().out
