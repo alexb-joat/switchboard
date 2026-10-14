@@ -765,3 +765,40 @@ def test_gzipped_upstream_stream_reaches_the_client_decoded(tmp_path):
     assert r.status_code == 200 and r.content == sse and "content-encoding" not in r.headers
     [rec] = [json.loads(line) for line in (tmp_path / "decisions.jsonl").read_text().splitlines()]
     assert rec["usage"] == {"prompt_tokens": 2100, "completion_tokens": 7, "total_tokens": 2107}
+
+
+def test_chunked_body_over_the_limit_is_refused_and_logged(tmp_path):
+    """No Content-Length (chunked) skips the up-front check; the read itself must stop at the cap."""
+    c = make_client(lambda r: ok("x"), cfg(limits={"max_body_bytes": 1000}, logging={"path": str(tmp_path / "decisions.jsonl")}))
+
+    def chunks():
+        for _ in range(50):
+            yield b"a" * 100  # 5,000 bytes in all, sent without a Content-Length
+
+    r = c.post("/v1/chat/completions", content=chunks(), headers={"Content-Type": "application/json"})
+    assert r.status_code == 413
+    r = c.post("/v1/chat/completions", json=body("a" * 5000))  # declared length: refused before reading
+    assert r.status_code == 413
+    reasons = [json.loads(line)["reason"] for line in (tmp_path / "security.jsonl").read_text().splitlines()]
+    assert reasons[0] == "body too large (streamed past the limit)" and reasons[1].startswith("body too large (declared")
+    assert c.post("/v1/chat/completions", json=body("hi")).status_code == 200  # a normal body is unaffected
+
+
+def test_logs_rotate_once_at_their_cap(tmp_path):
+    from trioditis.app import DecisionLog, SecurityLog
+    log = DecisionLog(str(tmp_path / "decisions.jsonl"), False, max_bytes=300)
+    for i in range(20):
+        log.write({"i": i, "pad": "x" * 40})
+    files = sorted(p.name for p in tmp_path.iterdir())
+    assert files == ["decisions.jsonl", "decisions.jsonl.1"]  # one backup, never more
+    kept = [json.loads(line)["i"] for name in ("decisions.jsonl.1", "decisions.jsonl") for line in (tmp_path / name).read_text().splitlines()]
+    assert kept == sorted(kept) and kept[-1] == 19  # the newest records survive, in order
+    import os, stat
+    if os.name == "posix":
+        for p in tmp_path.iterdir():
+            assert stat.S_IMODE(p.stat().st_mode) == 0o600, p.name
+    sec = SecurityLog(str(tmp_path / "decisions.jsonl"), max_bytes=200)
+    req = type("R", (), {"method": "POST", "url": type("U", (), {"path": "/x"})(), "client": None})()
+    for _ in range(10):
+        sec.write(req, "invalid or missing API key")
+    assert (tmp_path / "security.jsonl.1").exists()

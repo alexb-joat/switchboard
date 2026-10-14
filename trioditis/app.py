@@ -48,12 +48,31 @@ def _error(status: int, message: str, etype: str = "router_error") -> JSONRespon
     return JSONResponse({"error": {"message": message, "type": etype}}, status_code=status)
 
 
+DECISION_LOG_MAX = 50 * 1024 * 1024   # rotated once at this size: decisions.jsonl.1 keeps the previous file
+SECURITY_LOG_MAX = 5 * 1024 * 1024    # refusals can be spammed by anything that reaches the port: a smaller cap
+
+
+def _append_private(path: Path, line: str, max_bytes: int) -> None:
+    """Append a line to a JSONL log (owner-only), moving the file to <name>.1 once it passes max_bytes.
+    One backup only: the disk use is bounded at about twice the cap. Hlidskjalv's tail copes with the rename."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        if path.stat().st_size >= max_bytes:
+            os.replace(path, path.with_name(path.name + ".1"))
+    except FileNotFoundError:
+        pass
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
+    with os.fdopen(fd, "a", encoding="utf-8") as f:
+        f.write(line + "\n")
+
+
 class DecisionLog:
     """Append-only JSONL of routing decisions. Metadata only unless opted in."""
 
-    def __init__(self, path: str | None, log_prompts: bool):
+    def __init__(self, path: str | None, log_prompts: bool, max_bytes: int = DECISION_LOG_MAX):
         self.path = Path(path) if path else None
         self.log_prompts = log_prompts
+        self.max_bytes = max_bytes
         if self.path:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             if not self.path.exists():
@@ -62,16 +81,16 @@ class DecisionLog:
     def write(self, record: dict) -> None:
         if not self.path:
             return
-        with self.path.open("a", encoding="utf-8") as f:
-            f.write(json.dumps(record, ensure_ascii=False) + "\n")
+        _append_private(self.path, json.dumps(record, ensure_ascii=False), self.max_bytes)
 
 
 class SecurityLog:
     """Refused requests, next to the decision log (logs/security.jsonl). Hlidskjalv turns
     these into alerts. Method, path, client address and reason only: never keys or bodies."""
 
-    def __init__(self, decisions_path: str | None):
+    def __init__(self, decisions_path: str | None, max_bytes: int = SECURITY_LOG_MAX):
         self.path = Path(decisions_path).with_name("security.jsonl") if decisions_path else None
+        self.max_bytes = max_bytes
 
     def write(self, request: Request, reason: str) -> None:
         if not self.path:
@@ -80,10 +99,7 @@ class SecurityLog:
                "path": request.url.path[:200], "client": request.client.host if request.client else None,
                "reason": reason}
         try:
-            self.path.parent.mkdir(parents=True, exist_ok=True)
-            fd = os.open(self.path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
-            with os.fdopen(fd, "a", encoding="utf-8") as f:
-                f.write(json.dumps(rec) + "\n")
+            _append_private(self.path, json.dumps(rec), self.max_bytes)
         except OSError:
             pass
 
@@ -180,6 +196,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                 return _error(415, "Content-Type must be application/json")
             length = request.headers.get("content-length")
             if length and (not length.isdigit() or int(length) > cfg.limits.max_body_bytes):
+                security.write(request, f"body too large (declared {length[:20]} bytes)")
                 return _error(413, "request body too large")
         response = await call_next(request)
         response.headers["X-Content-Type-Options"] = "nosniff"
@@ -187,9 +204,16 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
         return response
 
     async def read_json(request: Request) -> dict:
-        raw = await request.body()
-        if len(raw) > cfg.limits.max_body_bytes:
-            raise RoutingError(413, "request body too large")
+        # Streamed with a cap: a chunked upload has no Content-Length to check up front, and
+        # request.body() would hold the whole thing in memory before looking at its size.
+        parts, size = [], 0
+        async for chunk in request.stream():
+            size += len(chunk)
+            if size > cfg.limits.max_body_bytes:
+                security.write(request, "body too large (streamed past the limit)")
+                raise RoutingError(413, "request body too large")
+            parts.append(chunk)
+        raw = b"".join(parts)
         try:
             body = json.loads(raw)
         except ValueError:
