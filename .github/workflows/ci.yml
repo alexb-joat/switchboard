@@ -18,7 +18,7 @@ jobs:
         # windows-2022 is the Windows 10 generation (kernel 10.0.20348), windows-2025 the
         # Windows 11 generation (10.0.26100). GitHub has no Windows 10/11 desktop x64 images.
         os: [ubuntu-latest, macos-latest, windows-2022, windows-2025]
-        python: ["3.11", "3.13"]
+        python: ["3.11", "3.12", "3.13"]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     steps:

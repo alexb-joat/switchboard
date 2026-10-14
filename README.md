@@ -42,7 +42,7 @@ Clients can also bypass routing: `model: "route/code"` forces a route, `model: "
 | macOS (Apple Silicon / Intel) | 3.11+ | launchd agent | ✅ |
 | Windows 10/11 | 3.11+ | Scheduled Task | ✅ |
 
-CI runs the unit tests and a real-server smoke test on all three, on Python 3.11 and 3.13.
+CI runs the unit tests and a real-server smoke test on all three, on Python 3.11, 3.12 and 3.13.
 
 ## Quick start
 
