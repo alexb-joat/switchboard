@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "trioditis"
-version = "0.3.0"
+version = "0.4.0"
 description = "Security-first LLM router: one OpenAI-compatible endpoint that picks the right model per prompt."
 readme = "README.md"
 license = "MIT"

@@ -17,5 +17,5 @@ body:
     validations: {required: true}
   - type: input
     id: env
-    attributes: {label: Environment, placeholder: "Kubuntu 24.04, Python 3.12, Trioditis 0.3.0"}
+    attributes: {label: Environment, placeholder: "Kubuntu 24.04, Python 3.12, Trioditis 0.4.0"}
     validations: {required: true}

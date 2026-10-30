@@ -30,7 +30,7 @@
 
 | Private by default | Cost-aware | Small and auditable | Explains itself |
 |---|---|---|---|
-| Prompts with emails, cards, keys or passwords go to a local model or are rejected. They are never sent to a cloud API by accident. | Daily and monthly caps with automatic local fallback, plus per-provider limits and live spend. | About 2,700 lines and four hash-pinned dependencies. No LiteLLM, no LangChain, no telemetry. | Every response names its route and model. A log records the reasons, with no prompt text. |
+| Prompts with emails, cards, keys or passwords go to a local model or are rejected. They are never sent to a cloud API by accident. | Daily and monthly caps with automatic local fallback, plus per-provider limits and live spend. | About 3,200 lines and four hash-pinned dependencies. No LiteLLM, no LangChain, no telemetry. | Every response names its route and model. A log records the reasons, with no prompt text. |
 
 ## Quick start
 
