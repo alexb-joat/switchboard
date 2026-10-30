@@ -1013,3 +1013,79 @@ def test_retry_after_parsing_edges():
     assert _retry_after({"retry-after": "999999"}) == 3600  # never more than an hour
     assert _retry_after({"retry-after": "soon"}) is None
     assert _retry_after({"retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"}) == 0  # in the past
+
+
+# ------------------------------------------------------------------ models by provider id
+
+async def test_a_model_can_be_named_by_its_provider_id():
+    c = cfg()
+    d = await decide(c, {"model": "big-1", "messages": [{"role": "user", "content": "hi"}]})
+    assert d.route == "explicit" and d.candidates == ["big"]
+    assert "client asked for big-1 (model big)" in d.reasons
+    twice = cfg(models={**BASE["models"], "big-again": {"provider": "cloud", "id": "big-1"}})
+    with pytest.raises(RoutingError) as e:
+        await decide(twice, {"model": "big-1", "messages": [{"role": "user", "content": "hi"}]})
+    assert e.value.status == 400 and "big, big-again" in e.value.message
+
+
+def test_responses_name_the_exact_provider_model():
+    r = make_client(lambda req: ok("x")).post("/v1/chat/completions", json={**body("hi"), "model": "big-1"})
+    assert r.status_code == 200
+    assert r.headers["x-trioditis-model"] == "big"
+    assert r.headers["x-trioditis-upstream-model"] == "big-1"
+
+
+# ------------------------------------------------------------------ prices from provider facts
+
+FACTS = {
+    "$schema": "provider-facts.v1", "generatedAt": "2026-10-14",
+    "providers": {"cloudco": {
+        "sources": {"pricing": {"url": "https://docs.example.com/pricing", "fetched": "2026-10-14"}},
+        "models": {
+            "cloudco/big-1": {"apiId": "big-1", "price": {"input": 2, "output": 10}, "sources": {"price": "pricing"}},
+            "cloudco/tiny": {"apiId": "tiny-9", "price": {"input": 0.1, "output": 0.5, "longContext": {
+                "threshold": 100000, "input": 0.5, "output": 2.5}}, "sources": {"price": "pricing"}},
+            "cloudco/unpriced": {"apiId": "mystery"},
+        }}},
+}
+
+
+def test_price_import_matches_by_provider_id_and_keeps_its_source():
+    import datetime as dt
+    from trioditis.pricefacts import FactsError, plan_import, stale_warning
+    current = {"big": {"input": 3, "output": 15}, "other": {"input": 1, "output": 1}, "_note": "kept"}
+    table, changes, unmatched = plan_import(FACTS, {"big": "big-1", "small": "tiny-9", "gpt": "gpt-5"}, current)
+    assert table["big"] == {"input": 2, "output": 10, "_source": "https://docs.example.com/pricing",
+                            "_fetched": "2026-10-14"}
+    assert table["small"]["long_context"] == {"threshold": 100000, "input": 0.5, "output": 2.5}
+    assert table["other"] == current["other"] and table["_note"] == "kept"  # untouched
+    assert unmatched == ["gpt"]
+    assert any("$3/$15 -> $2/$10" in line for line in changes)
+    _, again, _ = plan_import(FACTS, {"big": "big-1"}, table)
+    assert again == ["big (big-1): unchanged per 1M tokens"]
+    assert stale_warning(FACTS, dt.date(2026, 10, 30)) is None
+    assert "47 days old" in stale_warning(FACTS, dt.date(2026, 11, 30))
+    with pytest.raises(FactsError):
+        plan_import({"providers": {}}, {}, {})
+
+
+def test_prices_import_cli_writes_a_private_file(tmp_path, capsys):
+    import os
+    import stat
+    from trioditis.__main__ import main
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(json.dumps(BASE))  # JSON is valid YAML
+    facts = tmp_path / "facts.json"
+    facts.write_text(json.dumps(FACTS))
+    prices = tmp_path / "prices.json"
+    args = ["--config", str(cfg_file), "prices", "import", str(facts), "--prices", str(prices)]
+    with pytest.raises(SystemExit) as e:
+        main(args + ["--dry-run"])
+    assert e.value.code == 0 and not prices.exists()
+    with pytest.raises(SystemExit) as e:
+        main(args)
+    assert e.value.code == 0
+    assert json.loads(prices.read_text())["big"]["input"] == 2
+    if os.name == "posix":
+        assert stat.S_IMODE(prices.stat().st_mode) == 0o600
+    assert Prices(prices).estimate("big", 1_000_000, 0) == 2.0

@@ -26,6 +26,15 @@ Spend is calculated from `~/.hlidskjalv/prices.json`, the same file Hlidskjalv r
 {"claude-sonnet": {"input": 3.0, "output": 15.0}}
 ```
 
+Rather than typing prices, import them from a provider-facts file, which lists each model's price with the documentation page it came from (for example Euboulia's [`provider-facts.json`](https://github.com/alexb-joat/euboulia/blob/main/src/catalog/provider-facts.json)). Models are matched by the `id` in `config.yaml`; prices of models it does not list are left as they are, and each imported entry keeps its `_source` and `_fetched` date:
+
+```bash
+python -m trioditis prices import provider-facts.json --dry-run   # show old -> new
+python -m trioditis prices import provider-facts.json
+```
+
+It warns when the facts are more than 30 days old.
+
 A model whose price rises with the prompt size carries a tier. Above `threshold` prompt tokens, the tier's prices apply to the whole call:
 
 ```json

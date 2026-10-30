@@ -1,4 +1,4 @@
-"""Command line entry point: python -m trioditis [serve|check|explain|hardware|usage]."""
+"""Command line entry point: python -m trioditis [serve|check|explain|hardware|usage|prices]."""
 
 from __future__ import annotations
 
@@ -75,6 +75,13 @@ def main(argv: list[str] | None = None) -> None:
     u.add_argument("--db", default=None, help="metrics database (default ~/.hlidskjalv/metrics.db)")
     u.add_argument("--json", action="store_true", help="machine-readable output")
 
+    pr = sub.add_parser("prices", help="manage ~/.hlidskjalv/prices.json")
+    pr_sub = pr.add_subparsers(dest="prices_cmd", required=True)
+    imp = pr_sub.add_parser("import", help="take cloud model prices from a provider-facts file, with their sources")
+    imp.add_argument("facts", help="a provider-facts.v1 JSON file (for example Euboulia's src/catalog/provider-facts.json)")
+    imp.add_argument("--prices", default=None, help="prices file to update (default ~/.hlidskjalv/prices.json)")
+    imp.add_argument("--dry-run", action="store_true", help="show the changes, write nothing")
+
     args = ap.parse_args(argv)
     if args.cmd == "usage":  # reads the metrics database only: works without a config
         sys.exit(usage_report(args))
@@ -91,6 +98,9 @@ def main(argv: list[str] | None = None) -> None:
             where = "local" if p.local else "cloud"
             print(f"  {name:<24} {where:<6} {state}")
         return
+
+    if args.cmd == "prices":
+        sys.exit(prices_import(cfg, args))
 
     if args.cmd == "explain":
         from .router import decide
@@ -162,6 +172,44 @@ def parse_when(text: str, now: float | None = None) -> float:
     except ValueError:
         raise ValueError(f"cannot read {text!r}: use 30m, 24h, 7d, today, month or YYYY-MM-DD") from None
     return time.mktime((d.tm_year, d.tm_mon, d.tm_mday, 0, 0, 0, 0, 0, -1))
+
+
+def prices_import(cfg, args) -> int:
+    from trioditis_metrics.prices import DEFAULT_PRICES_PATH
+    from .pricefacts import FactsError, plan_import, stale_warning, write_prices
+
+    try:
+        facts = json.loads(Path(args.facts).expanduser().read_text(encoding="utf-8"))
+    except (OSError, ValueError) as err:
+        print(f"prices import: cannot read {args.facts}: {err}", file=sys.stderr)
+        return 2
+    path = Path(args.prices).expanduser() if args.prices else DEFAULT_PRICES_PATH
+    try:
+        current = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+    except ValueError:
+        print(f"prices import: {path} is not valid JSON; fix or move it first", file=sys.stderr)
+        return 2
+    cloud = {name: m.upstream_id for name, m in cfg.models.items() if not cfg.providers[m.provider].local}
+    try:
+        table, changes, unmatched = plan_import(facts, cloud, current if isinstance(current, dict) else {})
+    except FactsError as err:
+        print(f"prices import: {err}", file=sys.stderr)
+        return 2
+    if warning := stale_warning(facts):
+        print(f"warning: {warning}")
+    for line in changes:
+        print("  " + line)
+    for name in unmatched:
+        print(f"  {name} ({cloud[name]}): not in the facts file, left as it is")
+    if not changes:
+        print("nothing to import: no configured cloud model is in the facts file")
+        return 1
+    if args.dry_run:
+        print(f"dry run: {path} not changed")
+        return 0
+    write_prices(path, table)
+    print(f"wrote {path}")
+    return 0
 
 
 def usage_report(args) -> int:

@@ -86,7 +86,7 @@ Cloud models are optional: add `ANTHROPIC_API_KEY`, `OPENAI_API_KEY` or `OPENROU
 4. **Call the first model and fall back** on outage, rate limit, missing model or spending cap.
 5. **Pin the session.** Requests with the same `X-Session-Id` (or `user`) stay on one route, so agents do not switch models mid-task.
 
-Responses carry `X-Trioditis-Route` and `X-Trioditis-Model`. `POST /v1/route` or `trioditis explain "…"` shows the decision and reasons without calling a model. Clients can bypass routing with `model: "route/code"` (force a route) or `model: "legacy-mistral"` (call a model directly).
+Responses carry `X-Trioditis-Route` and `X-Trioditis-Model`. `POST /v1/route` or `trioditis explain "…"` shows the decision and reasons without calling a model. Clients can bypass routing with `model: "route/code"` (force a route), `model: "legacy-mistral"` (call a model directly) or the provider's own id, such as `model: "claude-haiku-5-5"`, which pins an exact version; `X-Trioditis-Upstream-Model` names the id the provider was sent.
 
 ## Connect your tools
 

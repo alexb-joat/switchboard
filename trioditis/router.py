@@ -230,6 +230,15 @@ async def decide(
             route_name = await _classify(cfg, last_user_text(messages), embedder, reasons)
             if pins and session_id:
                 pins.set(session_id, route_name)
+    elif named := [n for n, m in cfg.models.items() if m.upstream_id == requested]:
+        # The provider's own id ("claude-haiku-5-5") pins an exact version, where a config
+        # name ("claude-haiku") may move to a newer one; useful for evaluations.
+        if len(named) > 1:
+            raise RoutingError(400, f"model id {requested!r} is configured more than once ({', '.join(named)}); "
+                                    "ask for one of those names")
+        explicit_model = named[0]
+        route_name = "explicit"
+        reasons.append(f"client asked for {requested} (model {explicit_model})")
     else:
         raise RoutingError(404, f"unknown model {requested!r}")
 

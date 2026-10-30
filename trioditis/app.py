@@ -345,7 +345,8 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                         _remember_limits(metrics, m.provider, resp.headers)
                         _log(log, metrics, prices, d, body, model, 400, attempts, started, sid, caller, local=prov.local,
                              usage=_usage_from_json(detail), provider=m.provider)
-                        return _passthrough(resp, detail, {"X-Trioditis-Route": d.route, "X-Trioditis-Model": model})
+                        return _passthrough(resp, detail, {"X-Trioditis-Route": d.route, "X-Trioditis-Model": model,
+                                                           "X-Trioditis-Upstream-Model": m.upstream_id})
                 _remember_limits(metrics, m.provider, resp.headers)
 
                 if resp.status_code in RETRYABLE:
@@ -359,6 +360,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                 route_headers = {
                     "X-Trioditis-Route": d.route,
                     "X-Trioditis-Model": model,
+                    "X-Trioditis-Upstream-Model": m.upstream_id,  # the exact version the provider was asked for
                 }
                 local = prov.local
                 if not stream:

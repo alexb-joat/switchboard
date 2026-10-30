@@ -46,12 +46,17 @@ models:
     provider: anthropic
     id: claude-sonnet-5-5
     capabilities: [vision, tools]
-    context_tokens: 200000
+    context_tokens: 1000000
   claude-haiku:
     provider: anthropic
-    id: claude-haiku-4-5-20251001
+    id: claude-haiku-5-5
     capabilities: [vision, tools]
-    context_tokens: 200000
+    context_tokens: 1000000
+  claude-opus:                                 # callable by name or id; in no route, so it never costs by surprise
+    provider: anthropic
+    id: claude-opus-5-5
+    capabilities: [vision, tools]
+    context_tokens: 1000000
   gpt:
     provider: openai
     id: gpt-5
