@@ -55,7 +55,6 @@ def body(text, **kw):
 def _env(monkeypatch):
     monkeypatch.setenv("CLOUD_KEY", "cloud-secret")
     monkeypatch.delenv("TRIODITIS_API_KEY", raising=False)
-    monkeypatch.delenv("SWITCHBOARD_API_KEY", raising=False)
 
 
 # ------------------------------------------------------------------ config
@@ -442,31 +441,21 @@ def test_browser_pages_cannot_reach_a_keyless_router(tmp_path, monkeypatch):
     assert c.post("/v1/chat/completions", json=body("hi"), headers={**h, "Origin": "http://ui.example"}).status_code == 401
 
 
-def test_old_env_names_still_work_for_now(monkeypatch):
+def test_old_names_are_ignored_since_0_5(monkeypatch, tmp_path):
     from trioditis.envvars import env
+    from trioditis_metrics.home import data_home
     monkeypatch.delenv("TRIODITIS_CONFIG", raising=False)
     monkeypatch.setenv("SWITCHBOARD_CONFIG", "old.yaml")
-    assert env("CONFIG") == "old.yaml"
+    assert env("CONFIG") is None
     monkeypatch.setenv("TRIODITIS_CONFIG", "new.yaml")
     assert env("CONFIG") == "new.yaml"
-
-
-def test_data_home_moves_once_and_leaves_a_link(tmp_path, monkeypatch):
-    import os
-
-    from trioditis_metrics.home import data_home, migrate_home
     monkeypatch.delenv("HLIDSKJALV_HOME", raising=False)
-    monkeypatch.delenv("ARCADE_HOME", raising=False)
+    monkeypatch.setenv("ARCADE_HOME", str(tmp_path / "old"))
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     (tmp_path / ".arcade").mkdir()
-    (tmp_path / ".arcade" / "metrics.db").write_text("x")
-    assert data_home() == tmp_path / ".arcade"          # nothing moves on import or lookup
-    assert migrate_home() == tmp_path / ".hlidskjalv"
-    assert (tmp_path / ".hlidskjalv" / "metrics.db").read_text() == "x"
-    if os.name == "posix":
-        assert (tmp_path / ".arcade").is_symlink()       # old paths (shell hooks) keep working
-    assert migrate_home() == tmp_path / ".hlidskjalv"   # second time: nothing to do
-    assert data_home() == tmp_path / ".hlidskjalv"
+    assert data_home() == tmp_path / ".hlidskjalv"  # neither $ARCADE_HOME nor ~/.arcade is read
+    monkeypatch.setenv("HLIDSKJALV_HOME", str(tmp_path / "custom"))
+    assert data_home() == tmp_path / "custom"
 
 
 # ------------------------------------------------------------------ rate limits, per-provider caps, accounts
@@ -1235,3 +1224,33 @@ async def test_fallback_never_reaches_a_model_that_is_only_called_by_name():
         await decide(c, img)  # big has vision but is listed in no route here
     c2 = cfg(**THREE, routes={"quick": {"models": ["small"]}, "vis": {"models": ["big"]}}, default_route="quick")
     assert (await decide(c2, img)).candidates == ["big"]  # listed by another route: allowed
+
+
+# ------------------------------------------------------------------ packaging: templates and init
+
+def test_packaged_templates_match_the_repository_copies():
+    root = Path(__file__).resolve().parent.parent
+    tpl = root / "trioditis" / "templates"
+    assert (tpl / "config.example.yaml").read_text() == (root / "config.example.yaml").read_text()
+    assert (tpl / "env.example").read_text() == (root / ".env.example").read_text()
+
+
+def test_init_writes_a_working_folder_and_never_overwrites(tmp_path, capsys):
+    import os
+    import stat
+
+    from trioditis.__main__ import main
+    folder = tmp_path / "router"
+    with pytest.raises(SystemExit) as e:
+        main(["init", "--dir", str(folder)])
+    assert e.value.code == 0
+    assert (folder / "config.yaml").exists() and (folder / ".env").exists()
+    if os.name == "posix":
+        assert stat.S_IMODE((folder / ".env").stat().st_mode) == 0o600
+    (folder / "config.yaml").write_text("# mine\n" + (folder / "config.yaml").read_text())
+    with pytest.raises(SystemExit):
+        main(["init", "--dir", str(folder)])
+    assert (folder / "config.yaml").read_text().startswith("# mine")  # kept
+    assert "kept" in capsys.readouterr().out
+    main(["--config", str(folder / "config.yaml"), "check"])  # the written config is valid as it is
+    assert "config OK" in capsys.readouterr().out

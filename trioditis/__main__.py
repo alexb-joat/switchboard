@@ -1,4 +1,4 @@
-"""Command line entry point: python -m trioditis [serve|check|explain|hardware|usage|prices]."""
+"""Command line entry point: python -m trioditis [init|serve|check|explain|hardware|usage|prices]."""
 
 from __future__ import annotations
 
@@ -54,6 +54,9 @@ def main(argv: list[str] | None = None) -> None:
     ap.add_argument("--version", action="version", version=f"trioditis {__version__}")
     sub = ap.add_subparsers(dest="cmd")
 
+    i = sub.add_parser("init", help="write config.yaml and .env from the templates (never overwrites)")
+    i.add_argument("--dir", default=".", help="folder to set up (default: the current one)")
+
     s = sub.add_parser("serve", help="run the router (default)")
     s.add_argument("--host", default=env("HOST", "127.0.0.1"))
     s.add_argument("--port", type=int, default=int(env("PORT", "8787")))
@@ -84,6 +87,8 @@ def main(argv: list[str] | None = None) -> None:
     args = ap.parse_args(argv)
     if args.cmd == "usage":  # reads the metrics database only: works without a config
         sys.exit(usage_report(args))
+    if args.cmd == "init":  # creates the config: obviously works without one
+        sys.exit(init_folder(Path(args.dir)))
     try:
         cfg = load_config(args.config)
     except (OSError, ConfigError) as err:
@@ -127,8 +132,6 @@ def main(argv: list[str] | None = None) -> None:
         print(json.dumps(rep, indent=2) if args.json else format_report(rep))
         return
 
-    from trioditis_metrics.home import migrate_home
-    migrate_home()  # ~/.arcade -> ~/.hlidskjalv, once (the pre-rename location)
     host = getattr(args, "host", "127.0.0.1")
     port = getattr(args, "port", 8787)
     assert_safe_bind(host)
@@ -158,6 +161,30 @@ def main(argv: list[str] | None = None) -> None:
 
 _AGO = re.compile(r"^(\d+)([mhdw])$")
 _UNIT_S = {"m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
+
+
+def init_folder(folder: Path) -> int:
+    """config.yaml and .env from the packaged templates; files that exist are left alone."""
+    from importlib import resources
+    folder = folder.expanduser()
+    folder.mkdir(parents=True, exist_ok=True)
+    tpl = resources.files("trioditis") / "templates"
+    wrote = []
+    for name, target, private in (("config.example.yaml", "config.yaml", False), ("env.example", ".env", True)):
+        dest = folder / target
+        if dest.exists():
+            print(f"kept {dest} (already there)")
+            continue
+        data = tpl.joinpath(name).read_text(encoding="utf-8")
+        fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600 if private else 0o644)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(data)
+        wrote.append(target)
+        print(f"wrote {dest}")
+    where = "" if folder.resolve() == Path.cwd().resolve() else f"cd {folder} && "
+    print("next: " + (f"add cloud keys to {folder / '.env'} if you want them, then " if ".env" in wrote else "")
+          + f"{where}trioditis check && trioditis serve   (config.yaml, .env and logs/ are read from that folder)")
+    return 0
 
 
 def _readonly_latency():

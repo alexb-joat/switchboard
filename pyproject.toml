@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=69"]
+requires = ["setuptools>=77"]   # SPDX license string (PEP 639)
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "trioditis"
-version = "0.4.0"
+dynamic = ["version"]      # from trioditis/__init__.py, the one place it is written
 description = "Security-first LLM router: one OpenAI-compatible endpoint that picks the right model per prompt."
 readme = "README.md"
 license = "MIT"
@@ -25,7 +25,13 @@ Security = "https://github.com/alexb-joat/trioditis/security/policy"
 trioditis = "trioditis.__main__:main"
 
 [tool.setuptools]
-packages = ["trioditis", "trioditis_metrics"]
+packages = ["trioditis", "trioditis.templates", "trioditis_metrics"]
+
+[tool.setuptools.dynamic]
+version = { attr = "trioditis.__version__" }
+
+[tool.setuptools.package-data]
+"trioditis.templates" = ["config.example.yaml", "env.example"]   # for `trioditis init`
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

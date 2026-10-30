@@ -1,0 +1,133 @@
+# Trioditis config. Copy to config.yaml and edit.
+# Secrets never go in this file: providers reference an env var (api_key_env).
+# A cloud provider whose env var is unset is simply skipped.
+
+providers:
+  ollama:
+    base_url: http://localhost:11434/v1        # Docker: http://host.docker.internal:11434/v1
+    local: true                                # data stays on your machine
+  anthropic:
+    base_url: https://api.anthropic.com/v1     # OpenAI-compatible endpoint
+    api_key_env: ANTHROPIC_API_KEY
+  openai:
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+  openrouter:                                  # long tail, incl. older hosted models
+    base_url: https://openrouter.ai/api/v1
+    api_key_env: OPENROUTER_API_KEY
+
+# name -> where it lives. Pull local models first: `ollama pull <id>`.
+# Cloud model ids change; check your provider's model list before relying on one.
+models:
+  local-general:
+    provider: ollama
+    id: llama3.2:3b
+    capabilities: [tools]
+    context_tokens: 32000
+  local-coder:
+    provider: ollama
+    id: qwen2.5-coder:7b
+    capabilities: [tools]
+    context_tokens: 32000
+  local-reasoner:
+    provider: ollama
+    id: deepseek-r1:8b
+    context_tokens: 32000
+  local-vision:
+    provider: ollama
+    id: llava:7b
+    capabilities: [vision]
+    context_tokens: 4096
+  legacy-mistral:                              # a "legacy" model: callable by name
+    provider: ollama
+    id: mistral:7b
+    context_tokens: 8192
+  claude-sonnet:
+    provider: anthropic
+    id: claude-sonnet-5-5
+    capabilities: [vision, tools]
+    context_tokens: 1000000
+  claude-haiku:
+    provider: anthropic
+    id: claude-haiku-5-5
+    capabilities: [vision, tools]
+    context_tokens: 1000000
+  claude-opus:                                 # callable by name or id; in no route, so it never costs by surprise
+    provider: anthropic
+    id: claude-opus-5-5
+    capabilities: [vision, tools]
+    context_tokens: 1000000
+  gpt:
+    provider: openai
+    id: gpt-5
+    capabilities: [vision, tools]
+    context_tokens: 128000
+
+# Routes are tried top-down by signal strength; each lists models in preference
+# order. Later models are fallbacks (missing key, model down, rate limit...).
+routes:
+  code:
+    description: Writing, reviewing or debugging code
+    models: [claude-sonnet, gpt, local-coder]
+    keywords: [code, function, bug, error, stack trace, python, javascript, typescript,
+               sql, regex, refactor, unit test, api, docker, bash, compile, exception]
+    patterns: ['```', 'Traceback \(most recent call last\)', '\bdef \w+\(', '\bclass \w+']
+    # A coding agent (Cline, Roo, aider-style tools) sends tools named like these; each one found adds 2.
+    tool_keywords: [editor, write, edit, replace, apply_patch, read_file, run_command, execute,
+                    terminal, shell, bash, search_codebase]
+    examples:
+      - Why does this Python function throw a KeyError?
+      - Write a SQL query that returns the top 10 customers by revenue
+      - Refactor this React component to use hooks
+  reasoning:
+    description: Math, logic, multi-step analysis and planning
+    models: [gpt, claude-sonnet, local-reasoner]
+    keywords: [prove, proof, calculate, probability, equation, step by step,
+               optimize, trade-off, derive, logic puzzle]
+    examples:
+      - What is the probability of drawing two aces in a row?
+      - Compare these three pricing strategies and pick the best with reasoning
+  writing:
+    description: Drafting and editing prose
+    models: [claude-sonnet, gpt, local-general]
+    # cheapest: local models first ($0), then cloud ones by this request's estimated cost.
+    # Other choices: configured (the list order, the default) or fastest (median latency of recent calls).
+    prefer: cheapest
+    keywords: [email, draft, rewrite, rephrase, essay, blog, post, tone, proofread,
+               summarize, summary, cover letter, linkedin]
+    examples:
+      - Draft a short follow-up email after a sales call
+      - Rewrite this paragraph to sound less formal
+  quick:
+    description: Short questions and small talk
+    models: [local-general, claude-haiku]
+    prefer: cheapest
+    examples:
+      - What's the capital of Portugal?
+      - Convert 5 miles to kilometres
+
+default_route: quick
+
+# Semantic signal (optional). Must be a LOCAL provider: the prompt is embedded
+# there. Enable with `ollama pull nomic-embed-text`, or delete this block.
+embeddings:
+  provider: ollama
+  model: nomic-embed-text
+  threshold: 0.55
+
+privacy:
+  enabled: true
+  builtin_detectors: true          # emails, card numbers, IBANs, API keys, private keys...
+  keywords: [confidential, internal only, under nda]
+  patterns: []
+  on_no_local_model: reject        # reject | allow_cloud
+
+limits:
+  max_body_bytes: 20971520
+  upstream_timeout_s: 120
+  max_fallbacks: 3
+  session_ttl_s: 1800
+
+logging:
+  path: logs/decisions.jsonl
+  log_prompts: false               # keep false: logs then hold metadata only

@@ -29,7 +29,7 @@ FIXTURE = Path(__file__).resolve().parent.parent / "tests" / "fixtures" / "cline
 
 
 def key_from_env() -> str:
-    k = os.environ.get("TRIODITIS_API_KEY") or os.environ.get("SWITCHBOARD_API_KEY")
+    k = os.environ.get("TRIODITIS_API_KEY")
     if not k and Path(".env").exists():
         for line in Path(".env").read_text().splitlines():
             if line.startswith(("TRIODITIS_API_KEY=", "SWITCHBOARD_API_KEY=")):
