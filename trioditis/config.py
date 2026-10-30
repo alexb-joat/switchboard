@@ -71,6 +71,7 @@ class Route:
     patterns: tuple[re.Pattern, ...] = ()
     examples: tuple[str, ...] = ()  # for embedding similarity
     local_only: bool = False
+    tool_keywords: tuple[str, ...] = ()  # matched inside the request's tool names: a coding agent's tools say "code"
 
 
 @dataclass(frozen=True)
@@ -210,6 +211,7 @@ def parse_config(raw: dict) -> Config:
             patterns=_compile(r.get("patterns"), f"route {name}"),
             examples=tuple(r.get("examples") or []),
             local_only=bool(r.get("local_only", False)),
+            tool_keywords=tuple(str(k).lower() for k in r.get("tool_keywords") or []),
         )
     default_route = raw.get("default_route")
     if default_route not in routes:

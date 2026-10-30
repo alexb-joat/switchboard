@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import math
 import re
 import time
@@ -77,9 +79,34 @@ def has_images(messages: list) -> bool:
 
 
 def estimate_tokens(body: dict) -> int:
-    # ~4 chars/token is a deliberately rough, dependency-free estimate.
+    # ~4 chars/token is a deliberately rough, dependency-free estimate; tool definitions count too.
     text = all_text(body.get("messages") or [])
-    return len(text) // 4 + int(body.get("max_tokens") or body.get("max_completion_tokens") or 1024)
+    tools = json.dumps(body.get("tools") or [])
+    return (len(text) + len(tools)) // 4 + int(body.get("max_tokens") or body.get("max_completion_tokens") or 1024)
+
+
+def tool_names(body: dict) -> list[str]:
+    """Names of the tools a request offers (OpenAI function tools), lower-cased."""
+    names = []
+    for t in body.get("tools") or []:
+        if isinstance(t, dict):
+            fn = t.get("function") if isinstance(t.get("function"), dict) else t
+            if isinstance(fn.get("name"), str):
+                names.append(fn["name"].lower()[:80])
+    return names[:128]
+
+
+def agent_key(messages: list) -> str | None:
+    """A conversation key for an agent that sends no session id: the same system prompt and
+    first request means the same task. Kept in memory only, never logged."""
+    system = "\n".join(str(p.get("text", "")) for m in messages if m.get("role") == "system"
+                       for p in _parts(m.get("content")) if p.get("type") in ("text", "input_text"))
+    first = next((m for m in messages if m.get("role") == "user"), None)
+    if first is None:
+        return None
+    first_text = "\n".join(str(p.get("text", "")) for p in _parts(first.get("content"))
+                           if p.get("type") in ("text", "input_text"))
+    return "agent:" + hashlib.sha256((system + "\x00" + first_text).encode("utf-8", "ignore")).hexdigest()[:24]
 
 
 # ---------------------------------------------------------------- signals
@@ -94,6 +121,12 @@ def keyword_score(text: str, route: Route) -> int:
         if rx.search(text):
             score += 2
     return score
+
+
+def tool_score(names: list[str], route: Route) -> tuple[int, list[str]]:
+    """+2 for each tool whose name contains one of the route's tool keywords."""
+    hits = [n for n in names if any(k in n for k in route.tool_keywords)]
+    return 2 * len(hits), hits
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -224,14 +257,16 @@ async def decide(
             raise RoutingError(404, f"unknown route {route_name!r}")
         reasons.append(f"client forced route {route_name}")
     elif requested == "auto":
-        pinned = pins.get(session_id) if (pins and session_id) else None
+        # An agent that sends no session id is still one conversation: pin it by its task.
+        pin_key = session_id or (agent_key(messages) if tools else None)
+        pinned = pins.get(pin_key) if (pins and pin_key) else None
         if pinned and pinned in cfg.routes:
             route_name = pinned
-            reasons.append(f"session pinned to {pinned}")
+            reasons.append(f"session pinned to {pinned}" if session_id else f"agent conversation pinned to {pinned}")
         else:
-            route_name = await _classify(cfg, last_user_text(messages), embedder, reasons)
-            if pins and session_id:
-                pins.set(session_id, route_name)
+            route_name = await _classify(cfg, last_user_text(messages), embedder, reasons, tool_names(body))
+            if pins and pin_key:
+                pins.set(pin_key, route_name)
     elif named := [n for n, m in cfg.models.items() if m.upstream_id == requested]:
         # The provider's own id ("claude-haiku-5-5") pins an exact version, where a config
         # name ("claude-haiku") may move to a newer one; useful for evaluations.
@@ -296,8 +331,12 @@ async def decide(
     )
 
 
-async def _classify(cfg: Config, text: str, embedder: Embedder | None, reasons: list[str]) -> str:
-    kw = {name: keyword_score(text, r) for name, r in cfg.routes.items()}
+async def _classify(cfg: Config, text: str, embedder: Embedder | None, reasons: list[str],
+                    tools: list[str] | None = None) -> str:
+    kw, tool_hits = {}, {}
+    for name, r in cfg.routes.items():
+        ts, hits = tool_score(tools or [], r)
+        kw[name], tool_hits[name] = keyword_score(text, r) + ts, hits
     best_kw = max(kw.values()) if kw else 0
 
     sims: dict[str, float] = {}
@@ -310,7 +349,9 @@ async def _classify(cfg: Config, text: str, embedder: Embedder | None, reasons: 
     if best_kw > 0:
         top = [n for n, s in kw.items() if s == best_kw]
         name = max(top, key=lambda n: sims.get(n, 0.0))
-        reasons.append(f"keywords matched route {name} (score {best_kw})")
+        hits = tool_hits.get(name) or []
+        via = f"; tools: {', '.join(hits[:6])}" if hits else ""
+        reasons.append(f"keywords matched route {name} (score {best_kw}{via})")
         return name
 
     if sims:

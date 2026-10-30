@@ -72,6 +72,9 @@ routes:
     keywords: [code, function, bug, error, stack trace, python, javascript, typescript,
                sql, regex, refactor, unit test, api, docker, bash, compile, exception]
     patterns: ['```', 'Traceback \(most recent call last\)', '\bdef \w+\(', '\bclass \w+']
+    # A coding agent (Cline, Roo, aider-style tools) sends tools named like these; each one found adds 2.
+    tool_keywords: [editor, write, edit, replace, apply_patch, read_file, run_command, execute,
+                    terminal, shell, bash, search_codebase]
     examples:
       - Why does this Python function throw a KeyError?
       - Write a SQL query that returns the top 10 customers by revenue

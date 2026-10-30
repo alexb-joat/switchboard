@@ -1096,3 +1096,45 @@ def test_prices_import_cli_writes_a_private_file(tmp_path, capsys):
     if os.name == "posix":
         assert stat.S_IMODE(prices.stat().st_mode) == 0o600
     assert Prices(prices).estimate("big", 1_000_000, 0) == 2.0
+
+
+# ------------------------------------------------------------------ coding agents
+
+AGENT_ROUTES = {"code": {"models": ["big", "coder"], "keywords": ["python"],
+                         "tool_keywords": ["editor", "read_file", "run_command", "search_codebase"]},
+                "quick": {"models": ["small"]}}
+
+
+async def test_a_coding_agents_tools_route_it_to_code_and_its_follow_ups_stay():
+    from trioditis.router import SessionPins
+    c, pins = cfg(routes=AGENT_ROUTES), SessionPins(1800)
+    first, follow = cline_turn("first"), cline_turn("followup")
+    d1 = await decide(c, {**first, "model": "auto"}, pins=pins)
+    assert d1.route == "code"
+    assert any("tools: read_files, search_codebase, editor, run_commands" in r for r in d1.reasons)
+    d2 = await decide(c, {**follow, "model": "auto"}, pins=pins)  # "proceed": no keyword of its own
+    assert d2.route == "code" and "agent conversation pinned to code" in d2.reasons
+    # Without tool keywords configured, the same request falls to the default route, as before.
+    assert (await decide(cfg(), {**first, "model": "auto"})).route == "quick"
+
+
+async def test_agent_pins_need_tools_and_differ_per_task():
+    from trioditis.router import SessionPins, agent_key
+    c, pins = cfg(routes=AGENT_ROUTES), SessionPins(1800)
+    plain = body("a python question")  # no tools: never pinned by content
+    await decide(c, plain, pins=pins)
+    assert (await decide(c, body("thanks"), pins=pins)).route == "quick"
+    sys_msg = {"role": "system", "content": "You are an agent."}
+    a = [sys_msg, {"role": "user", "content": "task one"}]
+    b = [sys_msg, {"role": "user", "content": "task two"}]
+    assert agent_key(a) != agent_key(b)
+    assert agent_key(a + [{"role": "assistant", "content": "ok"}, {"role": "user", "content": "proceed"}]) == agent_key(a)
+
+
+def test_tool_names_and_token_estimate_count_tools():
+    from trioditis.router import estimate_tokens, tool_names
+    tools = [{"type": "function", "function": {"name": "Editor", "parameters": {"type": "object", "properties": {}}}},
+             {"type": "function", "function": {"name": "run_commands"}}, "junk", {"type": "function"}]
+    b = {**body("hi"), "tools": tools}
+    assert tool_names(b) == ["editor", "run_commands"]
+    assert estimate_tokens(b) > estimate_tokens(body("hi"))
