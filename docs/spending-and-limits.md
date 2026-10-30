@@ -53,7 +53,7 @@ A provider over its own cap is skipped while the others stay available.
 
 ## When a provider says "too many requests"
 
-A model that answers `429` is skipped like one that is down, and the next candidate is tried. If **every** model that was tried answered `429`, the client gets a `429` with `"type": "rate_limited"` and a `Retry-After` header holding the shortest wait any provider asked for (a provider's seconds or HTTP date, at most an hour), instead of a `502` it would retry at once. A route over its budget still answers `429` with `"type": "budget_exceeded"`, which means stop, not wait. Trioditis never sleeps inside a request; waiting is the client's call. `logs/decisions.jsonl` records which of the two it was in an `error` field.
+A model that answers `429` is skipped like one that is down, and the next candidate is tried. If **every** model that was tried answered `429`, the client gets a `429` with `"type": "rate_limited"` and a `Retry-After` header holding the shortest wait any provider asked for (a provider's seconds or HTTP date, at most an hour), instead of a `502` it would retry at once. A route over its budget still answers `429` with `"type": "budget_exceeded"`, which means stop, not wait. Trioditis never sleeps inside a request; waiting is the client's call. It does remember the wait: until it is over (or until a reported rate limit at zero refills), that provider's models are tried last by every request, so the next ones go straight to a model that can answer. `logs/decisions.jsonl` records which of the two it was in an `error` field.
 
 ## Usage reports
 

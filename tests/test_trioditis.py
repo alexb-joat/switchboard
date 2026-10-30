@@ -723,7 +723,7 @@ def test_cline_tools_skip_models_that_cannot_call_them():
     r = make_client(handler).post("/v1/chat/completions", json=turn)
     assert r.status_code == 200 and seen == ["llama3.2:3b"] and r.headers["X-Trioditis-Model"] == "small"
     d = make_client(handler).post("/v1/route", json=turn).json()
-    assert "skip coder: no tool calling" in d["reasons"] and "no route model fits; using any capable model" in d["reasons"]
+    assert "skip coder: no tool calling" in d["reasons"] and "no route model fits; using another route's capable model" in d["reasons"]
 
 
 def test_truncated_prompt_is_flagged_from_reported_usage(tmp_path):
@@ -1138,3 +1138,100 @@ def test_tool_names_and_token_estimate_count_tools():
     b = {**body("hi"), "tools": tools}
     assert tool_names(b) == ["editor", "run_commands"]
     assert estimate_tokens(b) > estimate_tokens(body("hi"))
+
+
+# ------------------------------------------------------------------ ordering, cooldowns, fallbacks
+
+THREE = {
+    "providers": {**BASE["providers"], "cloud2": {"base_url": "https://api2.example.com/v1", "api_key_env": "CLOUD_KEY"}},
+    "models": {**BASE["models"], "mid": {"provider": "cloud2", "id": "mid-1", "capabilities": ["tools"]},
+               "mystery": {"provider": "cloud2", "id": "mystery-1"}},
+}
+
+
+async def test_prefer_cheapest_puts_local_first_then_cost_and_unpriced_last(tmp_path):
+    from trioditis.router import Signals
+    pf = tmp_path / "prices.json"
+    pf.write_text(json.dumps({"big": {"input": 3, "output": 15}, "mid": {"input": 0.1, "output": 0.5}}))
+    c = cfg(**THREE, routes={"quick": {"models": ["mystery", "big", "mid", "small"], "prefer": "cheapest"}})
+    d = await decide(c, body("hello"), signals=Signals(prices=Prices(pf)))
+    assert d.candidates == ["small", "mid", "big", "mystery"]
+    assert d.estimates["small"] == {"usd": 0.0} and d.estimates["mystery"] == {"usd": None}
+    assert d.estimates["mid"]["usd"] < d.estimates["big"]["usd"]
+    assert any("prefer cheapest" in r and "no price for mystery" in r for r in d.reasons)
+    assert "estimates" in d.as_dict()
+    # configured order (the default) ignores prices
+    plain = cfg(**THREE, routes={"quick": {"models": ["mystery", "big", "mid", "small"]}})
+    assert (await decide(plain, body("hello"), signals=Signals(prices=Prices(pf)))).candidates[0] == "mystery"
+
+
+async def test_prefer_fastest_orders_by_median_latency():
+    from trioditis.router import Signals
+    c = cfg(**THREE, routes={"quick": {"models": ["big", "mid", "small"], "prefer": "fastest"}})
+    lat = {"big": 900, "small": 300}
+    d = await decide(c, body("hello"), signals=Signals(latency=lat.get))
+    assert d.candidates == ["small", "big", "mid"]  # mid has no data yet: last
+    assert any("no data yet for mid" in r for r in d.reasons)
+
+
+def test_prefer_must_be_known():
+    with pytest.raises(ConfigError):
+        cfg(routes={"quick": {"models": ["small"], "prefer": "random"}})
+
+
+def test_median_latency_of_recent_successful_calls(tmp_path):
+    db = MetricsDB(tmp_path / "metrics.db")
+    for ms, status in ((100, 200), (300, 200), (200, 200), (9000, 500)):
+        db.record({"route": "quick", "model": "small", "local": True, "status": status, "latency_ms": ms})
+    assert db.latency_p50("small", 0) == 200  # the failure is not counted
+    assert db.latency_p50("other", 0) is None
+
+
+def test_a_rate_limited_provider_is_tried_last_until_its_wait_ends():
+    seen = []
+
+    def handler(req):
+        seen.append(req.url.host)
+        if req.url.host == "api.example.com":
+            return httpx.Response(429, headers={"retry-after": "30"}, json={"error": "slow down"})
+        return ok("x")
+
+    c = make_client(handler)  # route code: big (cloud) first, coder (local) second
+    assert c.post("/v1/chat/completions", json=body("python bug")).status_code == 200
+    assert seen == ["api.example.com", "localhost"]
+    seen.clear()
+    r = c.post("/v1/route", json=body("python bug"))
+    assert r.json()["model"] == "coder"
+    assert any(x.startswith("big: rate-limited until") for x in r.json()["reasons"])
+    assert c.post("/v1/chat/completions", json=body("python bug")).status_code == 200
+    assert seen == ["localhost"]  # the cloud model is not asked again during its wait
+
+
+def test_cooldowns_expire_cap_at_an_hour_and_follow_a_zero_rate_limit():
+    import time as _time
+
+    from trioditis.app import _remember_limits
+    from trioditis.router import Cooldowns
+    cd = Cooldowns()
+    cd.wait("a", seconds=-5)
+    assert cd.until("a") is None  # already over
+    cd.wait("b", seconds=10 * 86400)
+    assert cd.until("b") <= _time.time() + Cooldowns.MAX_S + 1
+    cd.wait("c", until=_time.time() - 1)
+    assert cd.until("c") is None
+    db = MetricsDB(Path(tempfile.mkdtemp()) / "metrics.db")
+    _remember_limits(db, "openai", {"x-ratelimit-remaining-requests": "0", "x-ratelimit-reset-requests": "20s",
+                                    "x-ratelimit-limit-requests": "500"}, cd)
+    assert 15 < cd.until("openai") - _time.time() <= 21
+
+
+async def test_fallback_never_reaches_a_model_that_is_only_called_by_name():
+    c = cfg(**THREE, routes={"quick": {"models": ["small"]}, "vis": {"models": ["coder"]}}, default_route="quick")
+    # small has no vision; the fallback may take another route's model or a local one, but never "big" or "mid",
+    # which no route lists (callable by name only).
+    img = {"model": "route/quick", "messages": [{"role": "user", "content": [
+        {"type": "text", "text": "what is this"}, {"type": "image_url", "image_url": {"url": "data:,"}}]}]}
+    with pytest.raises(RoutingError):
+        await decide(c, img)  # big has vision but is listed in no route here
+    c2 = cfg(**THREE, routes={"quick": {"models": ["small"]}, "vis": {"models": ["big"]}}, default_route="quick")
+    assert (await decide(c2, img)).candidates == ["big"]  # listed by another route: allowed

@@ -102,10 +102,13 @@ def main(argv: list[str] | None = None) -> None:
         sys.exit(prices_import(cfg, args))
 
     if args.cmd == "explain":
-        from .router import decide
+        from trioditis_metrics.prices import Prices
+
+        from .router import Signals, decide
         body = {"model": "auto", "messages": [{"role": "user", "content": args.prompt}]}
-        # Keyword/rule signals only here, so the CLI never calls any network service.
-        d = asyncio.run(decide(cfg, body))
+        # Keyword/rule signals only here, so the CLI never calls any network service; prices and past
+        # latency (read-only) let it show a route's cost or speed order.
+        d = asyncio.run(decide(cfg, body, signals=Signals(prices=Prices(), latency=_readonly_latency())))
         print(json.dumps(d.as_dict(), indent=2))
         return
 
@@ -155,6 +158,23 @@ def main(argv: list[str] | None = None) -> None:
 
 _AGO = re.compile(r"^(\d+)([mhdw])$")
 _UNIT_S = {"m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
+
+
+def _readonly_latency():
+    import sqlite3
+
+    from trioditis_metrics.db import DEFAULT_PATH, latency_p50, open_readonly
+
+    def p50(model: str) -> int | None:
+        try:
+            conn = open_readonly(DEFAULT_PATH)
+            try:
+                return latency_p50(conn, model, time.time() - 7 * 86400)
+            finally:
+                conn.close()
+        except sqlite3.Error:
+            return None
+    return p50
 
 
 def parse_when(text: str, now: float | None = None) -> float:

@@ -25,7 +25,7 @@ from .accounts import report as account_report
 from .config import Config
 from .envvars import env
 from .hardware import ReportCache
-from .router import Decision, Embedder, RoutingError, SessionPins, all_text, decide
+from .router import Cooldowns, Decision, Embedder, RoutingError, SessionPins, Signals, all_text, decide
 from .security import check_bearer, fingerprint, host_header_is_local, origin_is_local, router_api_key
 
 _CLIENT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}")
@@ -38,6 +38,9 @@ def client_of(headers) -> str | None:
     name = raw.strip().lower()
     return name if _CLIENT_NAME.fullmatch(name) else None
 
+
+# A 429 without Retry-After still moves that provider to the back of the line for this long.
+DEFAULT_COOLDOWN_S = 15
 
 # Upstream failures worth trying the next model for.
 RETRYABLE = {404, 408, 409, 425, 429, 500, 502, 503, 504}
@@ -129,11 +132,13 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
     )
     embedder = Embedder(cfg, client) if cfg.embeddings else None
     pins = SessionPins(cfg.limits.session_ttl_s)
+    cooldowns = Cooldowns()
     log = DecisionLog(cfg.logging.path, cfg.logging.log_prompts)
     security = SecurityLog(cfg.logging.path)
     metrics = metrics or MetricsDB()  # one per process; ~/.hlidskjalv/metrics.db by default
     budget = budget or BudgetGuard(metrics)
     prices = prices or Prices()
+    signals = Signals(prices=prices, latency=_latency_cache(metrics), cooldowns=cooldowns)
 
     hw_cache = ReportCache()  # hardware once per process; installed models every 60 s
     hardware_file = hardware_file or DEFAULT_HARDWARE_FILE
@@ -276,7 +281,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
         """Dry run: show which model would be chosen and why. Calls no model."""
         try:
             body = await read_json(request)
-            d = await decide(cfg, body, embedder=embedder, pins=None,
+            d = await decide(cfg, body, embedder=embedder, pins=None, signals=signals,
                              session_id=None)
         except RoutingError as e:
             return _error(e.status, e.message)
@@ -289,7 +294,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
             body = await read_json(request)
             sid = session_of(request, body)
             caller = client_of(request.headers)  # the calling tool, for usage per tool
-            d = await decide(cfg, body, embedder=embedder, pins=pins, session_id=sid)
+            d = await decide(cfg, body, embedder=embedder, pins=pins, session_id=sid, signals=signals)
         except RoutingError as e:
             return _error(e.status, e.message)
 
@@ -342,17 +347,21 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                             attempts.append({"model": model, "error": type(e).__name__})
                             continue
                     else:  # a 400 for another reason: the client's problem, passed through as for a non-stream call
-                        _remember_limits(metrics, m.provider, resp.headers)
+                        _remember_limits(metrics, m.provider, resp.headers, cooldowns)
                         _log(log, metrics, prices, d, body, model, 400, attempts, started, sid, caller, local=prov.local,
                              usage=_usage_from_json(detail), provider=m.provider)
                         return _passthrough(resp, detail, {"X-Trioditis-Route": d.route, "X-Trioditis-Model": model,
                                                            "X-Trioditis-Upstream-Model": m.upstream_id})
-                _remember_limits(metrics, m.provider, resp.headers)
+                _remember_limits(metrics, m.provider, resp.headers, cooldowns)
 
                 if resp.status_code in RETRYABLE:
                     attempt = {"model": model, "status": resp.status_code}
                     if resp.status_code in (429, 503) and (wait := _retry_after(resp.headers)) is not None:
                         attempt["retry_after"] = wait
+                    if resp.status_code == 429:  # tried last by the next requests until the wait is over
+                        cooldowns.wait(m.provider, seconds=attempt.get("retry_after") or DEFAULT_COOLDOWN_S)
+                    elif "retry_after" in attempt:
+                        cooldowns.wait(m.provider, seconds=attempt["retry_after"])
                     attempts.append(attempt)
                     await resp.aclose()
                     continue
@@ -464,14 +473,36 @@ async def _relay(resp: httpx.Response, on_done=None):
             on_done(_usage_from_sse(tail))
 
 
-def _remember_limits(metrics: MetricsDB, provider: str, headers) -> None:
-    """Rate-limit headers from an upstream response -> the metrics DB (Hlidskjalv shows them)."""
+def _remember_limits(metrics: MetricsDB, provider: str, headers, cooldowns: Cooldowns | None = None) -> None:
+    """Rate-limit headers from an upstream response -> the metrics DB (Hlidskjalv shows them); a limit
+    at zero with a refill time ahead makes the router try that provider last until then."""
     try:
         limits = parse_ratelimits(headers)
         if limits:
             metrics.record_limits(provider, limits)
+            if cooldowns is not None:
+                for v in limits.values():
+                    if v.get("remaining") == 0 and isinstance(v.get("reset_at"), (int, float)):
+                        cooldowns.wait(provider, until=float(v["reset_at"]))
     except (sqlite3.Error, ValueError, TypeError):
         pass
+
+
+def _latency_cache(metrics: MetricsDB, ttl_s: float = 60.0, window_s: float = 7 * 86400):
+    """Median latency per model from the metrics DB, cached for a minute (one query per model, not per request)."""
+    cache: dict[str, tuple[float, int | None]] = {}
+
+    def p50(model: str) -> int | None:
+        hit = cache.get(model)
+        if hit and hit[0] > time.monotonic():
+            return hit[1]
+        try:
+            value = metrics.latency_p50(model, time.time() - window_s)
+        except sqlite3.Error:
+            value = None
+        cache[model] = (time.monotonic() + ttl_s, value)
+        return value
+    return p50
 
 
 def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body: dict, model,

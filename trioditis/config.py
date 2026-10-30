@@ -72,6 +72,7 @@ class Route:
     examples: tuple[str, ...] = ()  # for embedding similarity
     local_only: bool = False
     tool_keywords: tuple[str, ...] = ()  # matched inside the request's tool names: a coding agent's tools say "code"
+    prefer: str = "configured"  # configured (list order) | cheapest (local first, then estimated cost) | fastest
 
 
 @dataclass(frozen=True)
@@ -118,6 +119,12 @@ class Config:
 
     def provider_of(self, model: str) -> Provider:
         return self.providers[self.models[model].provider]
+
+
+def _prefer(value, route: str) -> str:
+    if value not in ("configured", "cheapest", "fastest"):
+        raise ConfigError(f"route {route}: prefer must be configured, cheapest or fastest")
+    return value
 
 
 def _check_name(kind: str, name: object) -> str:
@@ -212,6 +219,7 @@ def parse_config(raw: dict) -> Config:
             examples=tuple(r.get("examples") or []),
             local_only=bool(r.get("local_only", False)),
             tool_keywords=tuple(str(k).lower() for k in r.get("tool_keywords") or []),
+            prefer=_prefer(r.get("prefer", "configured"), name),
         )
     default_route = raw.get("default_route")
     if default_route not in routes:

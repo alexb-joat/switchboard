@@ -174,6 +174,9 @@ class MetricsDB:
                     (provider[:40], name[:40], v.get("limit"), v.get("remaining"), v.get("reset_at"), seen),
                 )
 
+    def latency_p50(self, model: str, since: float) -> int | None:
+        return latency_p50(self._conn, model, since)
+
     def usage(self, since: float, until: float | None = None, by: str = "model",
               session_fp: str | None = None) -> list[dict]:
         return usage(self._conn, since, until, by, session_fp)
@@ -196,6 +199,17 @@ def open_readonly(path: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def latency_p50(conn: sqlite3.Connection, model: str, since: float, sample: int = 200) -> int | None:
+    """Median latency (ms) of the model's most recent successful calls since `since`, or None."""
+    rows = [r[0] for r in conn.execute(
+        "SELECT latency_ms FROM calls WHERE model = ? AND ts >= ? AND status < 400 AND latency_ms IS NOT NULL "
+        "ORDER BY ts DESC LIMIT ?", (model, since, sample))]
+    if not rows:
+        return None
+    rows.sort()
+    return int(rows[len(rows) // 2])
 
 
 def usage(conn: sqlite3.Connection, since: float, until: float | None = None, by: str = "model",

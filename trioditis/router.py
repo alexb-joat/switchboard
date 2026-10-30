@@ -8,6 +8,7 @@ import math
 import re
 import time
 from collections import OrderedDict
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 import httpx
@@ -30,9 +31,10 @@ class Decision:
     reasons: list[str] = field(default_factory=list)
     sensitive: list[str] = field(default_factory=list)  # detector names only
     local_only: bool = False
+    estimates: dict[str, dict] = field(default_factory=dict)  # model -> {"usd": ..., "p50_ms": ...} when ordered by them
 
     def as_dict(self) -> dict:
-        return {
+        out = {
             "route": self.route,
             "model": self.candidates[0] if self.candidates else None,
             "fallbacks": self.candidates[1:],
@@ -40,6 +42,9 @@ class Decision:
             "sensitive": self.sensitive,
             "local_only": self.local_only,
         }
+        if self.estimates:
+            out["estimates"] = self.estimates
+        return out
 
 
 # ---------------------------------------------------------------- request facts
@@ -178,6 +183,40 @@ class Embedder:
         }
 
 
+class Cooldowns:
+    """Providers that asked us to wait (429/503 with Retry-After, or a rate limit at zero):
+    tried last until then, never dropped. In memory: a restart forgets them."""
+
+    MAX_S = 3600
+
+    def __init__(self):
+        self._until: dict[str, float] = {}
+
+    def wait(self, provider: str, seconds: float | None = None, until: float | None = None) -> None:
+        now = time.time()
+        t = until if until is not None else now + float(seconds or 0)
+        t = min(t, now + self.MAX_S)
+        if t > now and t > self._until.get(provider, 0.0):
+            self._until[provider] = t
+
+    def until(self, provider: str) -> float | None:
+        t = self._until.get(provider)
+        if t is None:
+            return None
+        if t <= time.time():
+            del self._until[provider]
+            return None
+        return t
+
+
+@dataclass
+class Signals:
+    """What the router may use to order a route's models beyond the configured order."""
+    prices: object | None = None  # trioditis_metrics.Prices: .estimate(model, tokens_in, tokens_out)
+    latency: Callable[[str], int | None] | None = None  # model -> median latency in ms, recent successful calls
+    cooldowns: Cooldowns | None = None
+
+
 class SessionPins:
     """Keep one route per conversation so agents don't switch models mid-task."""
 
@@ -229,6 +268,7 @@ async def decide(
     embedder: Embedder | None = None,
     pins: SessionPins | None = None,
     session_id: str | None = None,
+    signals: Signals | None = None,
 ) -> Decision:
     messages = body.get("messages")
     if not isinstance(messages, list) or not messages:
@@ -305,13 +345,27 @@ async def decide(
 
     candidates = filt(preferred)
     if not candidates and not explicit_model:
-        others = [m for m in cfg.models if m not in preferred]
+        # Only models some route lists, or local ones: a model configured for calling by name
+        # (an expensive one, say) is never reached by surprise.
+        in_routes = {mn for r in cfg.routes.values() for mn in r.models}
+        others = [m for m in cfg.models if m not in preferred
+                  and (m in in_routes or cfg.providers[cfg.models[m].provider].local)]
         candidates = [
             m for m in others
             if _eligible(cfg, m, vision=vision, tools=tools, tokens=tokens, local_only=local_only) is None
         ]
         if candidates:
-            reasons.append("no route model fits; using any capable model")
+            reasons.append("no route model fits; using another route's capable model")
+
+    estimates: dict[str, dict] = {}
+    if signals and not explicit_model and len(candidates) > 1:
+        prefer = cfg.routes[route_name].prefer
+        if prefer == "cheapest":
+            candidates, estimates = _by_cost(cfg, body, candidates, signals, reasons)
+        elif prefer == "fastest":
+            candidates, estimates = _by_speed(candidates, signals, reasons)
+    if signals and signals.cooldowns and len(candidates) > 1:
+        candidates = _cooled_last(cfg, candidates, signals.cooldowns, reasons)
 
     if not candidates:
         if sensitive and cfg.privacy.on_no_local_model == "reject":
@@ -328,7 +382,56 @@ async def decide(
         reasons=reasons,
         sensitive=sensitive,
         local_only=local_only,
+        estimates=estimates,
     )
+
+
+def prompt_tokens(body: dict) -> int:
+    """Rough prompt size: about four characters per token, messages plus tool definitions."""
+    return (len(all_text(body.get("messages") or [])) + len(json.dumps(body.get("tools") or []))) // 4
+
+
+def _by_cost(cfg: Config, body: dict, candidates: list[str], signals: Signals, reasons: list[str]):
+    """Local models first ($0), then cloud models by this request's estimated cost; unpriced last."""
+    tin = prompt_tokens(body)
+    tout = int(body.get("max_completion_tokens") or body.get("max_tokens") or 1024)
+    est: dict[str, dict] = {}
+
+    def key(m: str):
+        if cfg.providers[cfg.models[m].provider].local:
+            est[m] = {"usd": 0.0}
+            return (0, 0.0)
+        usd = signals.prices.estimate(m, tin, tout) if signals.prices is not None else None
+        est[m] = {"usd": usd}
+        return (1, usd) if usd is not None else (2, 0.0)
+
+    ordered = sorted(candidates, key=key)  # stable: ties keep the configured order
+    unpriced = [m for m in ordered if est[m]["usd"] is None]
+    reasons.append("prefer cheapest: local first, then by estimated cost"
+                   + (f"; no price for {', '.join(unpriced)} (last)" if unpriced else ""))
+    return ordered, est
+
+
+def _by_speed(candidates: list[str], signals: Signals, reasons: list[str]):
+    """By median latency of recent successful calls; models with no data yet keep their order, last."""
+    est = {m: {"p50_ms": signals.latency(m) if signals.latency else None} for m in candidates}
+    ordered = sorted(candidates, key=lambda m: (0, est[m]["p50_ms"]) if est[m]["p50_ms"] is not None else (1, 0))
+    unknown = [m for m in ordered if est[m]["p50_ms"] is None]
+    reasons.append("prefer fastest: by median latency of recent calls"
+                   + (f"; no data yet for {', '.join(unknown)} (last)" if unknown else ""))
+    return ordered, est
+
+
+def _cooled_last(cfg: Config, candidates: list[str], cooldowns: Cooldowns, reasons: list[str]) -> list[str]:
+    ready, waiting = [], []
+    for m in candidates:
+        until = cooldowns.until(cfg.models[m].provider)
+        if until is None:
+            ready.append(m)
+        else:
+            waiting.append(m)
+            reasons.append(f"{m}: rate-limited until {time.strftime('%H:%M:%S', time.localtime(until))}, tried last")
+    return ready + waiting
 
 
 async def _classify(cfg: Config, text: str, embedder: Embedder | None, reasons: list[str],

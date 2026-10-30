@@ -90,6 +90,9 @@ routes:
   writing:
     description: Drafting and editing prose
     models: [claude-sonnet, gpt, local-general]
+    # cheapest: local models first ($0), then cloud ones by this request's estimated cost.
+    # Other choices: configured (the list order, the default) or fastest (median latency of recent calls).
+    prefer: cheapest
     keywords: [email, draft, rewrite, rephrase, essay, blog, post, tone, proofread,
                summarize, summary, cover letter, linkedin]
     examples:
@@ -98,6 +101,7 @@ routes:
   quick:
     description: Short questions and small talk
     models: [local-general, claude-haiku]
+    prefer: cheapest
     examples:
       - What's the capital of Portugal?
       - Convert 5 miles to kilometres
