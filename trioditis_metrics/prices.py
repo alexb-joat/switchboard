@@ -5,6 +5,12 @@ both Hlidskjalv's cost display and Trioditis' budget guard:
 
     {"claude-sonnet": {"input": 3.0, "output": 15.0}}   # USD per 1M tokens
 
+A model whose price rises above a prompt size carries a tier; above the threshold the
+tier's prices apply to the whole call:
+
+    {"claude-haiku": {"input": 0.1, "output": 0.5,
+                      "long_context": {"threshold": 100000, "input": 0.5, "output": 2.5}}}
+
 Keys are Trioditis model names (config.yaml). Keys starting with "_" are
 notes. The file is re-read when it changes, so edits apply without a restart.
 """
@@ -46,12 +52,26 @@ class Prices:
         """USD for one call: 0 for local models, None when it can't be priced."""
         if local:
             return 0.0
-        p = self.table().get(model or "")
         usage = usage or {}
         tin, tout = usage.get("prompt_tokens"), usage.get("completion_tokens")
-        if not p or not isinstance(tin, int) or not isinstance(tout, int):
+        if not isinstance(tin, int) or not isinstance(tout, int):
             return None
+        return self.estimate(model, tin, tout)
+
+    def estimate(self, model: str | None, tokens_in: int, tokens_out: int) -> float | None:
+        """USD for a call of this size, or None when the model has no price."""
+        p = self.table().get(model or "")
+        if not p:
+            return None
+        rates = p
+        tier = p.get("long_context")
+        if isinstance(tier, dict) and _is_num(tier.get("threshold")) and tokens_in > tier["threshold"]:
+            rates = tier
         try:
-            return round((tin * float(p.get("input", 0)) + tout * float(p.get("output", 0))) / 1e6, 6)
+            return round((tokens_in * float(rates.get("input", 0)) + tokens_out * float(rates.get("output", 0))) / 1e6, 6)
         except (TypeError, ValueError):
             return None
+
+
+def _is_num(v) -> bool:
+    return isinstance(v, (int, float)) and not isinstance(v, bool)

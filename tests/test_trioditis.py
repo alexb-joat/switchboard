@@ -886,3 +886,73 @@ def test_usage_cli_without_a_database(capsys, tmp_path):
     with pytest.raises(SystemExit) as e:
         main(["usage", "--since", "last tuesday", "--db", str(tmp_path / "missing.db")])
     assert e.value.code == 2
+
+
+# ------------------------------------------------------------------ cap reservation
+
+def _cloud_only_app(tmp_path, handler, daily=1.0):
+    """Route 'cloudy' has only the cloud model; 'big' costs $600 per 1M output tokens, so a request
+    with max_tokens=1000 is estimated at $0.60 against a $1.00 daily cap."""
+    pf = tmp_path / "prices.json"
+    pf.write_text(json.dumps({"big": {"input": 0, "output": 600}}))
+    metrics = MetricsDB(tmp_path / "metrics.db")
+    guard = BudgetGuard(metrics, BudgetCaps(daily_usd=daily, monthly_usd=100))
+    app = create_app(cfg(routes={"cloudy": {"models": ["big"]}}, default_route="cloudy"),
+                     transport=httpx.MockTransport(handler), metrics=metrics, budget=guard, prices=Prices(pf),
+                     hardware_file=tmp_path / "hardware.json", accounts_file=tmp_path / "accounts.json")
+    return app, guard
+
+
+async def test_a_burst_cannot_overshoot_the_cap(tmp_path):
+    import anyio
+    gate, upstream_calls = anyio.Event(), []
+
+    async def handler(req):
+        upstream_calls.append(req.url.host)
+        await gate.wait()  # the first call is still running when the second arrives
+        return httpx.Response(200, json={"choices": [{"message": {"content": "ok"}}],
+                                         "usage": {"prompt_tokens": 10, "completion_tokens": 500}})
+
+    app, guard = _cloud_only_app(tmp_path, handler)
+    results = {}
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://127.0.0.1:8787") as c:
+        async def call(name):
+            results[name] = await c.post("/v1/chat/completions", json=body("hi", max_tokens=1000))
+
+        async with anyio.create_task_group() as tg:
+            tg.start_soon(call, "first")
+            while not upstream_calls:
+                await anyio.sleep(0.01)
+            assert guard.pending() == pytest.approx(0.6)
+            await call("second")  # 0 spent + 0.60 held + 0.60 this call > 1.00
+            gate.set()
+    assert upstream_calls == ["api.example.com"]  # the second never reached the provider
+    assert results["second"].status_code == 429
+    assert "would be crossed" in results["second"].json()["error"]["message"]
+    assert results["first"].status_code == 200
+    assert guard.pending() == 0  # released once the real cost ($0.30) was recorded
+    assert guard.db.spend_today() == pytest.approx(0.3)
+
+
+def test_holds_are_released_after_failures_and_streams(tmp_path):
+    def failing(req):
+        return httpx.Response(503, json={"error": "overloaded"})
+
+    app, guard = _cloud_only_app(tmp_path, failing)
+    r = TestClient(app, base_url="http://127.0.0.1:8787").post("/v1/chat/completions", json=body("hi", max_tokens=10))
+    assert r.status_code == 502 and guard.pending() == 0
+
+    sse = (b'data: {"choices":[{"delta":{"content":"hi"}}]}\n\n'
+           b'data: {"choices":[],"usage":{"prompt_tokens":5,"completion_tokens":7}}\n\ndata: [DONE]\n\n')
+
+    def streaming(req):
+        return httpx.Response(200, content=sse, headers={"content-type": "text/event-stream"})
+
+    (tmp_path / "s").mkdir()
+    app, guard = _cloud_only_app(tmp_path / "s", streaming)
+    with TestClient(app, base_url="http://127.0.0.1:8787").stream(
+            "POST", "/v1/chat/completions", json=body("hi", max_tokens=10, stream=True)) as r:
+        assert r.status_code == 200
+        b"".join(r.iter_bytes())
+    assert guard.pending() == 0  # the stream's end released it, after recording the real usage
+    assert guard.db.recent()[0]["tokens_out"] == 7

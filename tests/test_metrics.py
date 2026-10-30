@@ -7,6 +7,7 @@ from pathlib import Path
 
 from trioditis_metrics.db import MetricsDB, open_readonly, usage
 from trioditis_metrics.guard import BudgetCaps, BudgetGuard
+from trioditis_metrics.prices import Prices
 
 
 def mk_db() -> MetricsDB:
@@ -171,6 +172,70 @@ class UsageTest(unittest.TestCase):
         with self.assertRaises(sqlite3.OperationalError):
             open_readonly(missing)
         self.assertFalse(missing.exists())
+
+
+class PricesTest(unittest.TestCase):
+    def prices(self, table) -> Prices:
+        path = Path(tempfile.mkdtemp()) / "prices.json"
+        path.write_text(json.dumps(table))
+        return Prices(path)
+
+    def test_long_context_tier_applies_to_the_whole_call(self):
+        p = self.prices({"haiku": {"input": 0.1, "output": 0.5,
+                                   "long_context": {"threshold": 100000, "input": 0.5, "output": 2.5}}})
+        self.assertAlmostEqual(p.estimate("haiku", 100000, 1000), (100000 * 0.1 + 1000 * 0.5) / 1e6)
+        self.assertAlmostEqual(p.estimate("haiku", 100001, 1000), (100001 * 0.5 + 1000 * 2.5) / 1e6, delta=1e-6)
+        self.assertAlmostEqual(p.cost("haiku", False, {"prompt_tokens": 150000, "completion_tokens": 10}),
+                               (150000 * 0.5 + 10 * 2.5) / 1e6)
+        self.assertIsNone(p.estimate("unknown", 10, 10))
+        self.assertEqual(p.cost("anything", True, None), 0.0)
+
+    def test_a_malformed_tier_is_ignored(self):
+        p = self.prices({"m": {"input": 1, "output": 2, "long_context": {"threshold": "big", "input": 9}}})
+        self.assertAlmostEqual(p.estimate("m", 10**6, 0), 1.0)
+
+
+class ReservationTest(unittest.TestCase):
+    def test_a_hold_counts_until_released(self):
+        guard = BudgetGuard(mk_db(), BudgetCaps(daily_usd=1.0, monthly_usd=15.0))
+        first, why = guard.reserve("cloud", 0.6)
+        self.assertIsNotNone(first)
+        self.assertIsNone(why)
+        second, why = guard.reserve("cloud", 0.6)  # 0 spent + 0.6 pending + 0.6 > 1.0
+        self.assertIsNone(second)
+        self.assertIn("daily cap would be crossed", why)
+        self.assertIn("$0.6000 pending", why)
+        guard.release(first)
+        self.assertEqual(guard.pending(), 0)
+        again, why = guard.reserve("cloud", 0.6)
+        self.assertIsNotNone(again)
+
+    def test_spend_plus_estimate_over_the_cap_is_refused(self):
+        db = mk_db()
+        db.record({**CLOUD_CALL, "cost": 0.95})
+        guard = BudgetGuard(db, BudgetCaps(daily_usd=1.0, monthly_usd=15.0))
+        self.assertIsNone(guard.check("cloud", 0.04))
+        self.assertIn("would be crossed", guard.check("cloud", 0.06))
+
+    def test_provider_caps_count_only_that_providers_holds(self):
+        guard = BudgetGuard(mk_db(), BudgetCaps(daily_usd=10, monthly_usd=10, providers={"a": {"daily_usd": 1.0}}))
+        held, _ = guard.reserve("b", 0.9)
+        self.assertIsNotNone(held)
+        self.assertIsNotNone(guard.reserve("a", 0.9)[0])  # b's hold is not a's spend
+        self.assertIn("a daily cap would be crossed", guard.reserve("a", 0.2)[1])
+
+    def test_stale_holds_expire(self):
+        guard = BudgetGuard(mk_db(), BudgetCaps(daily_usd=1.0, monthly_usd=15.0))
+        held, _ = guard.reserve("cloud", 0.9)
+        held.at -= BudgetGuard.RESERVATION_TTL_S + 1  # a stream that never reported back
+        self.assertEqual(guard.pending(), 0)
+        self.assertIsNotNone(guard.reserve("cloud", 0.9)[0])
+
+    def test_caps_load_the_output_assumption(self):
+        path = Path(tempfile.mkdtemp()) / "budget.json"
+        path.write_text(json.dumps({"assume_output_tokens": 4000}))
+        self.assertEqual(BudgetCaps.load(path).assume_output_tokens, 4000)
+        self.assertEqual(BudgetCaps().assume_output_tokens, 1024)
 
 
 if __name__ == "__main__":

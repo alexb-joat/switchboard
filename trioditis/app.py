@@ -294,80 +294,93 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
 
         stream = bool(body.get("stream"))
         attempts: list[dict] = []
-        blocked: str | None = None  # the global budget, checked once before the first cloud call
-        checked: dict[str, str | None] = {}  # provider -> block reason (global + that provider's own caps)
+        blocked: str | None = None  # the first budget refusal: decides the answer if nothing else can serve
+        caps = budget.caps  # read once per request: the same caps for every candidate
+        tokens_in = _sent_tokens(all_text(body.get("messages") or []), body)
+        tokens_out = _max_output(body) or caps.assume_output_tokens
         for model in d.candidates:
             m = cfg.models[model]
             prov = cfg.providers[m.provider]
+            held = None  # this call's reservation against the caps, released once its cost is recorded
             if not prov.local:
-                if m.provider not in checked:
-                    checked[m.provider] = budget.check(m.provider)
-                    blocked = blocked or checked[m.provider]
-                if checked[m.provider]:
-                    attempts.append({"model": model, "error": "budget_blocked", "reason": checked[m.provider]})
+                estimate = prices.estimate(model, tokens_in, tokens_out)
+                held, reason = budget.reserve(m.provider, caps.assume_unpriced_usd if estimate is None else estimate,
+                                              caps)
+                if reason:
+                    blocked = blocked or reason
+                    attempts.append({"model": model, "error": "budget_blocked", "reason": reason})
                     continue
-            upstream_body = dict(body)
-            upstream_body["model"] = m.upstream_id
-            upstream_body.pop("user", None)  # don't forward session ids upstream
-            if stream and prov.stream_usage:  # usage comes in the last event; without it a priced call counts $0
-                upstream_body["stream_options"] = {**(upstream_body.get("stream_options") or {}), "include_usage": True}
-            # Only our own headers go upstream: the client's Authorization (our
-            # router key) must never be forwarded to a provider.
-            headers = {"Content-Type": "application/json"}
-            if prov.api_key():
-                headers["Authorization"] = f"Bearer {prov.api_key()}"
-            url = f"{prov.base_url}/chat/completions"
+            streaming = False  # a stream releases its reservation itself, when it ends
             try:
-                req = client.build_request("POST", url, json=upstream_body, headers=headers)
-                resp = await client.send(req, stream=stream)
-            except httpx.HTTPError as e:
-                attempts.append({"model": model, "error": type(e).__name__})
-                continue
-            if resp.status_code == 400 and stream and "stream_options" in upstream_body:
-                detail = await resp.aread()
-                await resp.aclose()
-                if b"stream_options" in detail:  # a provider that doesn't know the option: once more without it
-                    upstream_body.pop("stream_options", None)
+                upstream_body = dict(body)
+                upstream_body["model"] = m.upstream_id
+                upstream_body.pop("user", None)  # don't forward session ids upstream
+                if stream and prov.stream_usage:  # usage comes in the last event; without it a priced call counts $0
+                    upstream_body["stream_options"] = {**(upstream_body.get("stream_options") or {}), "include_usage": True}
+                # Only our own headers go upstream: the client's Authorization (our
+                # router key) must never be forwarded to a provider.
+                headers = {"Content-Type": "application/json"}
+                if prov.api_key():
+                    headers["Authorization"] = f"Bearer {prov.api_key()}"
+                url = f"{prov.base_url}/chat/completions"
+                try:
+                    req = client.build_request("POST", url, json=upstream_body, headers=headers)
+                    resp = await client.send(req, stream=stream)
+                except httpx.HTTPError as e:
+                    attempts.append({"model": model, "error": type(e).__name__})
+                    continue
+                if resp.status_code == 400 and stream and "stream_options" in upstream_body:
+                    detail = await resp.aread()
+                    await resp.aclose()
+                    if b"stream_options" in detail:  # a provider that doesn't know the option: once more without it
+                        upstream_body.pop("stream_options", None)
+                        try:
+                            req = client.build_request("POST", url, json=upstream_body, headers=headers)
+                            resp = await client.send(req, stream=stream)
+                        except httpx.HTTPError as e:
+                            attempts.append({"model": model, "error": type(e).__name__})
+                            continue
+                    else:  # a 400 for another reason: the client's problem, passed through as for a non-stream call
+                        _remember_limits(metrics, m.provider, resp.headers)
+                        _log(log, metrics, prices, d, body, model, 400, attempts, started, sid, caller, local=prov.local,
+                             usage=_usage_from_json(detail), provider=m.provider)
+                        return _passthrough(resp, detail, {"X-Trioditis-Route": d.route, "X-Trioditis-Model": model})
+                _remember_limits(metrics, m.provider, resp.headers)
+
+                if resp.status_code in RETRYABLE:
+                    attempts.append({"model": model, "status": resp.status_code})
+                    await resp.aclose()
+                    continue
+
+                route_headers = {
+                    "X-Trioditis-Route": d.route,
+                    "X-Trioditis-Model": model,
+                }
+                local = prov.local
+                if not stream:
+                    content = resp.content
+                    await resp.aclose()
+                    _log(log, metrics, prices, d, body, model, resp.status_code, attempts, started, sid, caller,
+                         local=local, usage=_usage_from_json(content), provider=m.provider)
+                    return _passthrough(resp, content, route_headers)
+
+                def done(usage, _model=model, _status=resp.status_code, _local=local, _prov=m.provider, _held=held):
                     try:
-                        req = client.build_request("POST", url, json=upstream_body, headers=headers)
-                        resp = await client.send(req, stream=stream)
-                    except httpx.HTTPError as e:
-                        attempts.append({"model": model, "error": type(e).__name__})
-                        continue
-                else:  # a 400 for another reason: the client's problem, passed through as for a non-stream call
-                    _remember_limits(metrics, m.provider, resp.headers)
-                    _log(log, metrics, prices, d, body, model, 400, attempts, started, sid, caller, local=prov.local,
-                         usage=_usage_from_json(detail), provider=m.provider)
-                    return _passthrough(resp, detail, {"X-Trioditis-Route": d.route, "X-Trioditis-Model": model})
-            _remember_limits(metrics, m.provider, resp.headers)
+                        _log(log, metrics, prices, d, body, _model, _status, attempts, started, sid, caller,
+                             local=_local, usage=usage, provider=_prov)
+                    finally:
+                        budget.release(_held)  # after the record: the cost moves from pending to spent, no gap
 
-            if resp.status_code in RETRYABLE:
-                attempts.append({"model": model, "status": resp.status_code})
-                await resp.aclose()
-                continue
-
-            route_headers = {
-                "X-Trioditis-Route": d.route,
-                "X-Trioditis-Model": model,
-            }
-            local = prov.local
-            if not stream:
-                content = resp.content
-                await resp.aclose()
-                _log(log, metrics, prices, d, body, model, resp.status_code, attempts, started, sid, caller,
-                     local=local, usage=_usage_from_json(content), provider=m.provider)
-                return _passthrough(resp, content, route_headers)
-
-            def done(usage, _model=model, _status=resp.status_code, _local=local, _prov=m.provider):
-                _log(log, metrics, prices, d, body, _model, _status, attempts, started, sid, caller,
-                     local=_local, usage=usage, provider=_prov)
-
-            return StreamingResponse(
-                _relay(resp, done),
-                status_code=resp.status_code,
-                media_type=resp.headers.get("content-type", "text/event-stream"),
-                headers=route_headers,
-            )
+                streaming = True
+                return StreamingResponse(
+                    _relay(resp, done),
+                    status_code=resp.status_code,
+                    media_type=resp.headers.get("content-type", "text/event-stream"),
+                    headers=route_headers,
+                )
+            finally:
+                if not streaming:
+                    budget.release(held)
 
         if blocked and not any(cfg.providers[cfg.models[mn].provider].local
                                for mn in d.candidates):
@@ -482,13 +495,26 @@ def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body
         pass  # metrics are best-effort; never fail (or break a stream) over them
 
 
+def _sent_tokens(text: str, body: dict) -> int:
+    """Rough prompt size: about four characters per token, messages plus tool definitions."""
+    return (len(text) + len(json.dumps(body.get("tools") or []))) // 4
+
+
+def _max_output(body: dict) -> int | None:
+    for key in ("max_completion_tokens", "max_tokens"):
+        v = body.get(key)
+        if isinstance(v, int) and not isinstance(v, bool) and v > 0:
+            return v
+    return None
+
+
 def _prompt_cut(text: str, body: dict, usage: dict | None) -> str | None:
     """A provider that reports far fewer prompt tokens than were sent has cut the prompt
     (Ollama does so silently past its context window, 4,096 tokens by default)."""
     reported = (usage or {}).get("prompt_tokens")
     if not isinstance(reported, int):
         return None
-    sent = (len(text) + len(json.dumps(body.get("tools") or []))) // 4
+    sent = _sent_tokens(text, body)
     if sent >= 1000 and reported < sent * 0.5:
         return (f"provider reported {reported} prompt tokens for about {sent} sent: the prompt was probably cut "
                 f"at the model's context window (Ollama: raise OLLAMA_CONTEXT_LENGTH)")

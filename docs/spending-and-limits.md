@@ -16,12 +16,20 @@ Before any cloud call, Trioditis checks today's and this month's spend against y
 {"daily_usd": 1.0, "monthly_usd": 15.0}
 ```
 
+**Each call is checked before it starts, including its own estimated cost.** Trioditis estimates the call from the prompt size (about four characters per token) and the request's `max_tokens` (or `assume_output_tokens` from `budget.json`, default 1024), and holds that amount against the caps until the real cost is recorded. A burst of parallel requests therefore cannot all slip under a cap that only the first of them fits: a call whose estimate would cross a cap is refused the same way as one over it, with a reason such as `daily cap would be crossed ($0.9700 spent + $0.0200 pending + $0.0300 this call > $1.00)`. A hold that never reports back (a stream the client dropped before it began) expires after 15 minutes.
+
 Over a cap, cloud models are skipped and the route's local model answers instead, the same way it would if the cloud model were down. The skip is logged in `failed_attempts`, so [Hlidskjalv](https://github.com/alexb-joat/hlidskjalv) shows it. A route with no local model returns `429 budget_exceeded` instead of a bill. Edits to the file apply on the next request, no restart needed.
 
 Spend is calculated from `~/.hlidskjalv/prices.json`, the same file Hlidskjalv reads (USD per million tokens, keyed by model name in `config.yaml`):
 
 ```json
 {"claude-sonnet": {"input": 3.0, "output": 15.0}}
+```
+
+A model whose price rises with the prompt size carries a tier. Above `threshold` prompt tokens, the tier's prices apply to the whole call:
+
+```json
+{"claude-haiku": {"input": 0.1, "output": 0.5, "long_context": {"threshold": 100000, "input": 0.5, "output": 2.5}}}
 ```
 
 **A cloud model without a price counts as $0 toward the caps** unless you set `"assume_unpriced_usd": 0.05` (an assumed cost per such call) in `budget.json`; Hlidskjalv raises an alert when calls without a price happen, so add every cloud model you use. Streaming answers carry their token usage too: Trioditis asks the provider for it (OpenAI's `stream_options`) and retries once without for a provider that doesn't know the option, or set `stream_usage: false` on that provider. Local models always cost $0.
