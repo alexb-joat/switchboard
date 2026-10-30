@@ -1,0 +1,91 @@
+name: release
+
+# A v* tag builds the sdist and wheel, checks them in a clean venv, publishes them to PyPI through
+# trusted publishing (no token stored anywhere) and attaches them to the GitHub release.
+# Run by hand (workflow_dispatch) it only builds and checks: a dry run.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6.3.0
+        with:
+          python-version: "3.13"
+      - name: Build tools (hash-verified)
+        run: pip install --require-hashes --no-deps -r requirements-release.txt
+      - name: The tag names this version
+        if: startsWith(github.ref, 'refs/tags/v')
+        run: |
+          v=$(python -c "import trioditis; print(trioditis.__version__)")
+          [ "v$v" = "$GITHUB_REF_NAME" ] || { echo "tag $GITHUB_REF_NAME but trioditis.__version__ is $v"; exit 1; }
+      - name: "Build sdist and wheel (no build isolation, so nothing is fetched unpinned)"
+        run: python -m build --no-isolation
+      - name: Install the wheel in a clean venv and start from nothing
+        run: |
+          python -m venv /tmp/clean
+          /tmp/clean/bin/pip install --require-hashes --no-deps -r requirements.txt
+          /tmp/clean/bin/pip install --no-deps dist/*.whl
+          cd "$(mktemp -d)"
+          /tmp/clean/bin/trioditis --version
+          /tmp/clean/bin/trioditis init
+          /tmp/clean/bin/trioditis check
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
+
+  pypi:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: pypi
+      url: https://pypi.org/project/trioditis/
+    permissions:
+      id-token: write   # trusted publishing: PyPI trusts this workflow, no API token exists
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@7245906fb61fa33a13554f9d5fb856fe61758086 # v1.14.3
+
+  github-release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write   # attach the files to the release
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5.1.0
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist/
+      - name: Create the release from the changelog if it doesn't exist, then attach the files
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            awk -v v="${TAG#v}" '$0 ~ "^## "v" " {f=1; next} /^## / {f=0} f' CHANGELOG.md > notes.md
+            gh release create "$TAG" --verify-tag --title "$TAG" --notes-file notes.md
+          fi
+          gh release upload "$TAG" dist/* --clobber

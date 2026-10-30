@@ -1,0 +1,3 @@
+# Release builds only (.github/workflows/release.yml): build without fetching anything unpinned.
+build
+setuptools>=77

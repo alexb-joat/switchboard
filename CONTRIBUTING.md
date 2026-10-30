@@ -34,3 +34,11 @@ Thanks for helping. Trioditis sits between people and every model they use, so t
 ## Style
 
 Small functions, type hints, plain names. Match the code around you.
+
+## Releasing (maintainer)
+
+1. Bump `__version__` in `trioditis/__init__.py` (the only place it is written) and add the `CHANGELOG.md` section.
+2. Push, wait for CI, then `git tag -a vX.Y.Z -m "vX.Y.Z" && git push origin vX.Y.Z`.
+3. `.github/workflows/release.yml` checks the tag against the version, builds the sdist and wheel with hash-pinned
+   tools, installs the wheel in a clean venv (`init`, `check`), publishes to PyPI through trusted publishing (no
+   token exists) and attaches the files to the GitHub release. Run it by hand for a dry run that only builds.
