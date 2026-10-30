@@ -42,6 +42,10 @@ A model whose price rises with the prompt size carries a tier. Above `threshold`
 
 A provider over its own cap is skipped while the others stay available.
 
+## When a provider says "too many requests"
+
+A model that answers `429` is skipped like one that is down, and the next candidate is tried. If **every** model that was tried answered `429`, the client gets a `429` with `"type": "rate_limited"` and a `Retry-After` header holding the shortest wait any provider asked for (a provider's seconds or HTTP date, at most an hour), instead of a `502` it would retry at once. A route over its budget still answers `429` with `"type": "budget_exceeded"`, which means stop, not wait. Trioditis never sleeps inside a request; waiting is the client's call. `logs/decisions.jsonl` records which of the two it was in an `error` field.
+
 ## Usage reports
 
 `trioditis usage` reads the metrics database and prints calls, errors, tokens and spend per group. It needs no config and never writes to the database, so it is safe while the router runs:

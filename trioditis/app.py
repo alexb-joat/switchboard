@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import email.utils
 import json
 import os
 import re
@@ -348,7 +349,10 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                 _remember_limits(metrics, m.provider, resp.headers)
 
                 if resp.status_code in RETRYABLE:
-                    attempts.append({"model": model, "status": resp.status_code})
+                    attempt = {"model": model, "status": resp.status_code}
+                    if resp.status_code in (429, 503) and (wait := _retry_after(resp.headers)) is not None:
+                        attempt["retry_after"] = wait
+                    attempts.append(attempt)
                     await resp.aclose()
                     continue
 
@@ -382,12 +386,22 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                 if not streaming:
                     budget.release(held)
 
+        # Every model that was tried said "too many requests": tell the client when to come back,
+        # instead of a 502 it would retry at once. A batch client waits; a person sees why.
+        reached = [a for a in attempts if a.get("error") != "budget_blocked"]
+        if reached and all(a.get("status") == 429 for a in reached):
+            waits = [a["retry_after"] for a in reached if "retry_after" in a]
+            _log(log, metrics, prices, d, body, None, 429, attempts, started, sid, caller, error="rate_limited")
+            resp = _error(429, f"rate-limited by every candidate model: {attempts}", "rate_limited")
+            if waits:
+                resp.headers["Retry-After"] = str(min(waits))
+            return resp
         if blocked and not any(cfg.providers[cfg.models[mn].provider].local
                                for mn in d.candidates):
-            _log(log, metrics, prices, d, body, None, 429, attempts, started, sid, caller)
+            _log(log, metrics, prices, d, body, None, 429, attempts, started, sid, caller, error="budget_exceeded")
             return _error(429, f"cloud budget exceeded: {blocked}; no local model "
                                f"available for route {d.route}", "budget_exceeded")
-        _log(log, metrics, prices, d, body, None, 502, attempts, started, sid, caller)
+        _log(log, metrics, prices, d, body, None, 502, attempts, started, sid, caller, error="upstream_error")
         return _error(502, f"all candidate models failed: {attempts}", "upstream_error")
 
     return app
@@ -460,7 +474,7 @@ def _remember_limits(metrics: MetricsDB, provider: str, headers) -> None:
 
 def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body: dict, model,
          status, attempts, started, sid, caller: str | None = None, local: bool | None = None,
-         usage: dict | None = None, provider: str | None = None) -> None:
+         usage: dict | None = None, provider: str | None = None, error: str | None = None) -> None:
     text = all_text(body.get("messages") or [])
     rec = {
         "ts": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
@@ -478,6 +492,8 @@ def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body
         "local": local,
         "usage": usage,
     }
+    if error:
+        rec["error"] = error  # why no model answered: rate_limited | budget_exceeded | upstream_error
     cut = _prompt_cut(text, body, usage)
     if cut:
         rec["prompt_truncated"] = True
@@ -493,6 +509,24 @@ def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body
                         "unpriced": bool(local is False and cost is None and usage and isinstance(status, int) and status < 400)})
     except sqlite3.Error:
         pass  # metrics are best-effort; never fail (or break a stream) over them
+
+
+def _retry_after(headers) -> int | None:
+    """Seconds to wait, from Retry-After as seconds or an HTTP date; clamped to an hour."""
+    raw = (headers.get("retry-after") or "").strip()
+    if not raw:
+        return None
+    if raw.isdigit():
+        wait = int(raw)
+    else:
+        try:
+            when = email.utils.parsedate_to_datetime(raw)
+        except (TypeError, ValueError):
+            return None
+        if when is None or when.tzinfo is None:
+            return None
+        wait = int(when.timestamp() - time.time() + 0.999)
+    return max(0, min(wait, 3600))
 
 
 def _sent_tokens(text: str, body: dict) -> int:

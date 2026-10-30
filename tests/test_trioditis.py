@@ -956,3 +956,60 @@ def test_holds_are_released_after_failures_and_streams(tmp_path):
         b"".join(r.iter_bytes())
     assert guard.pending() == 0  # the stream's end released it, after recording the real usage
     assert guard.db.recent()[0]["tokens_out"] == 7
+
+
+# ------------------------------------------------------------------ rate limits
+
+def _cloud_route(**over):
+    return cfg(routes={"cloudy": {"models": ["big"]}}, default_route="cloudy", **over)
+
+
+def test_rate_limit_comes_back_as_429_with_retry_after(tmp_path):
+    logf = tmp_path / "decisions.jsonl"
+    c = make_client(lambda req: httpx.Response(429, headers={"retry-after": "7"}, json={"error": "slow down"}),
+                    _cloud_route(logging={"path": str(logf)}))
+    r = c.post("/v1/chat/completions", json=body("hi"))
+    assert r.status_code == 429
+    assert r.headers["retry-after"] == "7"
+    assert r.json()["error"]["type"] == "rate_limited"
+    [rec] = [json.loads(line) for line in logf.read_text().splitlines()]
+    assert rec["error"] == "rate_limited" and rec["failed_attempts"][0]["retry_after"] == 7
+
+
+def test_retry_after_as_an_http_date_and_the_shortest_wait_wins():
+    import email.utils
+    import time as _time
+    soon = email.utils.formatdate(_time.time() + 30, usegmt=True)
+    config = cfg(providers={**BASE["providers"], "cloud2": {"base_url": "https://api2.example.com/v1"}},
+                 models={**BASE["models"], "big2": {"provider": "cloud2", "id": "big-2"}},
+                 routes={"cloudy": {"models": ["big", "big2"]}}, default_route="cloudy")
+
+    def handler(req):
+        if req.url.host == "api.example.com":
+            return httpx.Response(429, headers={"retry-after": "120"})
+        return httpx.Response(429, headers={"retry-after": soon})
+
+    r = make_client(handler, config).post("/v1/chat/completions", json=body("hi"))
+    assert r.status_code == 429
+    assert 25 <= int(r.headers["retry-after"]) <= 31
+
+
+def test_a_mix_of_rate_limit_and_failure_is_still_a_502():
+    def handler(req):
+        if req.url.host == "api.example.com":
+            return httpx.Response(429, headers={"retry-after": "5"})
+        return httpx.Response(500, json={"error": "boom"})
+
+    r = make_client(handler).post("/v1/chat/completions", json=body("python bug"))  # big (cloud) then coder (local)
+    assert r.status_code == 502
+    assert r.json()["error"]["type"] == "upstream_error"
+    assert "retry-after" not in r.headers
+
+
+def test_retry_after_parsing_edges():
+    from trioditis.app import _retry_after
+    assert _retry_after({}) is None
+    assert _retry_after({"retry-after": "0"}) == 0
+    assert _retry_after({"retry-after": "999999"}) == 3600  # never more than an hour
+    assert _retry_after({"retry-after": "soon"}) is None
+    assert _retry_after({"retry-after": "Wed, 21 Oct 2015 07:28:00 GMT"}) == 0  # in the past
