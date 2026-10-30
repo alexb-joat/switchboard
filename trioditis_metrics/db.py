@@ -67,9 +67,21 @@ CREATE TABLE IF NOT EXISTS provider_limits (
     PRIMARY KEY (provider, name)
 );
 """
-# Added after 0.2: older databases get it on open.
+# Added after 0.2: older databases get them on open.
 MIGRATIONS = ["ALTER TABLE calls ADD COLUMN provider TEXT",
-              "ALTER TABLE calls ADD COLUMN unpriced INTEGER NOT NULL DEFAULT 0"]
+              "ALTER TABLE calls ADD COLUMN unpriced INTEGER NOT NULL DEFAULT 0",
+              "ALTER TABLE calls ADD COLUMN session_fp TEXT",   # 0.4: hash of X-Session-Id / user, never the id
+              "ALTER TABLE calls ADD COLUMN client TEXT"]       # 0.4: the calling tool's name (X-Trioditis-Client, User-Agent)
+
+# What `usage()` can group by; a column an older database lacks reads as NULL.
+GROUPS = {
+    "model": "model",
+    "route": "route",
+    "provider": "provider",
+    "client": "client",
+    "session": "session_fp",
+    "day": "date(ts, 'unixepoch', 'localtime')",
+}
 
 
 class MetricsDB:
@@ -88,6 +100,7 @@ class MetricsDB:
             for stmt in MIGRATIONS:
                 if stmt.split("ADD COLUMN ")[1].split()[0] not in have:
                     self._conn.execute(stmt)
+            self._conn.execute("CREATE INDEX IF NOT EXISTS idx_calls_session ON calls(session_fp)")
         if os.name == "posix":
             os.chmod(self.path, 0o600)
 
@@ -98,8 +111,8 @@ class MetricsDB:
         with self._conn:
             cur = self._conn.execute(
                 "INSERT INTO calls (ts, route, model, local, status, latency_ms, "
-                "tokens_in, tokens_out, cost, fallbacks, sensitive, provider, unpriced) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "tokens_in, tokens_out, cost, fallbacks, sensitive, provider, unpriced, session_fp, client) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     ts if ts is not None else time.time(),
                     str(decision.get("route") or "?")[:40],
@@ -114,6 +127,8 @@ class MetricsDB:
                     json.dumps([str(s)[:30] for s in (decision.get("sensitive") or [])][:10]),
                     str(decision["provider"])[:40] if decision.get("provider") else None,
                     1 if decision.get("unpriced") else 0,
+                    str(decision["session_fp"])[:32] if decision.get("session_fp") else None,
+                    str(decision["client"])[:40] if decision.get("client") else None,
                 ),
             )
             return cur.lastrowid
@@ -159,6 +174,10 @@ class MetricsDB:
                     (provider[:40], name[:40], v.get("limit"), v.get("remaining"), v.get("reset_at"), seen),
                 )
 
+    def usage(self, since: float, until: float | None = None, by: str = "model",
+              session_fp: str | None = None) -> list[dict]:
+        return usage(self._conn, since, until, by, session_fp)
+
     def limits(self) -> list[dict]:
         return [dict(r) for r in self._conn.execute("SELECT * FROM provider_limits ORDER BY provider, name")]
 
@@ -170,6 +189,45 @@ class MetricsDB:
 
     def close(self) -> None:
         self._conn.close()
+
+
+def open_readonly(path: Path) -> sqlite3.Connection:
+    """For reports: never creates, migrates or locks the database Trioditis writes."""
+    conn = sqlite3.connect(Path(path).resolve().as_uri() + "?mode=ro", uri=True, timeout=2)
+    conn.row_factory = sqlite3.Row
+    return conn
+
+
+def usage(conn: sqlite3.Connection, since: float, until: float | None = None, by: str = "model",
+          session_fp: str | None = None) -> list[dict]:
+    """Calls, errors, tokens and cost per group between `since` and `until` (epoch seconds),
+    most expensive first. Works on databases from before 0.4 (no session or client yet)."""
+    if by not in GROUPS:
+        raise ValueError(f"cannot group by {by!r}; choose from {', '.join(GROUPS)}")
+    have = {r[1] for r in conn.execute("PRAGMA table_info(calls)")}
+    key = GROUPS[by]
+    if key in ("provider", "client", "session_fp") and key not in have:
+        key = "NULL"
+    where, args = "ts >= ?", [since]
+    if until is not None:
+        where += " AND ts < ?"
+        args.append(until)
+    if session_fp is not None:
+        if "session_fp" not in have:
+            return []
+        where += " AND session_fp = ?"
+        args.append(session_fp)
+    unpriced = "SUM(unpriced)" if "unpriced" in have else "0"
+    rows = conn.execute(
+        f"SELECT {key} AS key, COUNT(*) AS calls, "
+        "SUM(CASE WHEN status IS NULL OR status >= 400 THEN 1 ELSE 0 END) AS errors, "
+        "COALESCE(SUM(tokens_in), 0) AS tokens_in, COALESCE(SUM(tokens_out), 0) AS tokens_out, "
+        f"ROUND(COALESCE(SUM(cost), 0), 6) AS cost, {unpriced} AS unpriced, SUM(fallbacks) AS fallbacks, "
+        "SUM(local) AS local_calls, MIN(ts) AS first_ts, MAX(ts) AS last_ts "
+        f"FROM calls WHERE {where} GROUP BY 1 ORDER BY cost DESC, calls DESC, key",
+        args,
+    ).fetchall()
+    return [dict(r) for r in rows]
 
 
 def _start_of_day(now: float | None = None) -> float:

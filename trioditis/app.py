@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import sqlite3
 import time
 from contextlib import asynccontextmanager
@@ -25,6 +26,17 @@ from .accounts import ACCOUNTS_EVERY_S, adapter_for, report as account_report
 from .hardware import ReportCache
 from .router import Decision, Embedder, RoutingError, SessionPins, all_text, decide
 from .security import check_bearer, fingerprint, host_header_is_local, origin_is_local, router_api_key
+
+_CLIENT_NAME = re.compile(r"[a-z0-9][a-z0-9._-]{0,39}")
+
+
+def client_of(headers) -> str | None:
+    """The calling tool's name, for usage per tool: X-Trioditis-Client if set, else the first
+    User-Agent product ("ninshubur/0.1 (+https://…)" -> "ninshubur"). A name, never more of the header."""
+    raw = headers.get("x-trioditis-client") or (headers.get("user-agent") or "").split(" ")[0].split("/")[0]
+    name = raw.strip().lower()
+    return name if _CLIENT_NAME.fullmatch(name) else None
+
 
 # Upstream failures worth trying the next model for.
 RETRYABLE = {404, 408, 409, 425, 429, 500, 502, 503, 504}
@@ -275,6 +287,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
         try:
             body = await read_json(request)
             sid = session_of(request, body)
+            caller = client_of(request.headers)  # the calling tool, for usage per tool
             d = await decide(cfg, body, embedder=embedder, pins=pins, session_id=sid)
         except RoutingError as e:
             return _error(e.status, e.message)
@@ -323,7 +336,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
                         continue
                 else:  # a 400 for another reason: the client's problem, passed through as for a non-stream call
                     _remember_limits(metrics, m.provider, resp.headers)
-                    _log(log, metrics, prices, d, body, model, 400, attempts, started, sid, local=prov.local,
+                    _log(log, metrics, prices, d, body, model, 400, attempts, started, sid, caller, local=prov.local,
                          usage=_usage_from_json(detail), provider=m.provider)
                     return _passthrough(resp, detail, {"X-Trioditis-Route": d.route, "X-Trioditis-Model": model})
             _remember_limits(metrics, m.provider, resp.headers)
@@ -341,12 +354,12 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
             if not stream:
                 content = resp.content
                 await resp.aclose()
-                _log(log, metrics, prices, d, body, model, resp.status_code, attempts, started, sid,
+                _log(log, metrics, prices, d, body, model, resp.status_code, attempts, started, sid, caller,
                      local=local, usage=_usage_from_json(content), provider=m.provider)
                 return _passthrough(resp, content, route_headers)
 
             def done(usage, _model=model, _status=resp.status_code, _local=local, _prov=m.provider):
-                _log(log, metrics, prices, d, body, _model, _status, attempts, started, sid,
+                _log(log, metrics, prices, d, body, _model, _status, attempts, started, sid, caller,
                      local=_local, usage=usage, provider=_prov)
 
             return StreamingResponse(
@@ -358,10 +371,10 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
 
         if blocked and not any(cfg.providers[cfg.models[mn].provider].local
                                for mn in d.candidates):
-            _log(log, metrics, prices, d, body, None, 429, attempts, started, sid)
+            _log(log, metrics, prices, d, body, None, 429, attempts, started, sid, caller)
             return _error(429, f"cloud budget exceeded: {blocked}; no local model "
                                f"available for route {d.route}", "budget_exceeded")
-        _log(log, metrics, prices, d, body, None, 502, attempts, started, sid)
+        _log(log, metrics, prices, d, body, None, 502, attempts, started, sid, caller)
         return _error(502, f"all candidate models failed: {attempts}", "upstream_error")
 
     return app
@@ -433,7 +446,7 @@ def _remember_limits(metrics: MetricsDB, provider: str, headers) -> None:
 
 
 def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body: dict, model,
-         status, attempts, started, sid, local: bool | None = None,
+         status, attempts, started, sid, caller: str | None = None, local: bool | None = None,
          usage: dict | None = None, provider: str | None = None) -> None:
     text = all_text(body.get("messages") or [])
     rec = {
@@ -448,6 +461,7 @@ def _log(log: DecisionLog, metrics: MetricsDB, prices: Prices, d: Decision, body
         "prompt_fp": fingerprint(text),
         "prompt_chars": len(text),
         "session_fp": fingerprint(sid) if sid else None,
+        "client": caller,
         "local": local,
         "usage": usage,
     }

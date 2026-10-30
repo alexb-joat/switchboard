@@ -6,7 +6,7 @@ import httpx
 import pytest
 from fastapi.testclient import TestClient
 
-from trioditis.app import create_app
+from trioditis.app import client_of, create_app
 from trioditis.config import ConfigError, parse_config
 from trioditis.router import RoutingError, SessionPins, decide
 from trioditis.security import assert_safe_bind, detect_sensitive
@@ -811,3 +811,26 @@ def test_version_flag_names_the_release(capsys):
     with pytest.raises(SystemExit) as e:
         main(["--version"])
     assert e.value.code == 0 and f"trioditis {__version__}" in capsys.readouterr().out
+
+
+def test_client_name_from_header_or_user_agent():
+    assert client_of({"user-agent": "ninshubur/0.1 (+https://github.com/alexb-joat/ninshubur)"}) == "ninshubur"
+    assert client_of({"user-agent": "ai-sdk/openai-compatible/3.0.37 runtime/node.js/v24"}) == "ai-sdk"
+    assert client_of({"x-trioditis-client": "Cline", "user-agent": "curl/8.5"}) == "cline"  # explicit wins
+    assert client_of({"user-agent": "curl/8.5.0"}) == "curl"
+    for junk in ({}, {"user-agent": ""}, {"user-agent": "<script>/1"}, {"x-trioditis-client": "a b"},
+                 {"x-trioditis-client": "x" * 41}):
+        assert client_of(junk) is None
+
+
+def test_session_and_client_reach_the_metrics_db():
+    db = MetricsDB(Path(tempfile.mkdtemp()) / "metrics.db")
+    c = make_client(lambda req: ok("llama3.2:3b"), metrics=db)
+    r = c.post("/v1/chat/completions", json=body("hello"),
+               headers={"X-Session-Id": "eval/run-7", "User-Agent": "ninshubur/0.1"})
+    assert r.status_code == 200
+    from trioditis.security import fingerprint
+    row = db.recent()[0]
+    assert row["client"] == "ninshubur"
+    assert row["session_fp"] == fingerprint("eval/run-7")  # the hash, never the id itself
+    assert [u["key"] for u in db.usage(0, by="session")] == [fingerprint("eval/run-7")]

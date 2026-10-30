@@ -1,10 +1,11 @@
 import json
+import sqlite3
 import tempfile
 import time
 import unittest
 from pathlib import Path
 
-from trioditis_metrics.db import MetricsDB
+from trioditis_metrics.db import MetricsDB, open_readonly, usage
 from trioditis_metrics.guard import BudgetCaps, BudgetGuard
 
 
@@ -114,6 +115,62 @@ class BudgetGuardTest(unittest.TestCase):
             db.record(LOCAL_CALL)
         guard = BudgetGuard(db, BudgetCaps(daily_usd=0.01, monthly_usd=0.01))
         self.assertIsNone(guard.check())
+
+
+OLD_SCHEMA_03 = """CREATE TABLE calls (id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, route TEXT NOT NULL,
+model TEXT NOT NULL, local INTEGER NOT NULL, status INTEGER, latency_ms INTEGER, tokens_in INTEGER,
+tokens_out INTEGER, cost REAL, fallbacks INTEGER NOT NULL DEFAULT 0, sensitive TEXT NOT NULL DEFAULT '[]',
+provider TEXT, unpriced INTEGER NOT NULL DEFAULT 0)"""
+
+
+def old_db() -> Path:
+    """A metrics.db as Trioditis 0.3 left it: no session or client column."""
+    path = Path(tempfile.mkdtemp()) / "metrics.db"
+    con = sqlite3.connect(path)
+    con.execute(OLD_SCHEMA_03)
+    con.execute("INSERT INTO calls (ts, route, model, local, status, tokens_in, tokens_out, cost, provider) "
+                "VALUES (?, 'code', 'claude-sonnet', 0, 200, 100, 50, 0.01, 'anthropic')", (time.time(),))
+    con.commit()
+    con.close()
+    return path
+
+
+class UsageTest(unittest.TestCase):
+    def test_old_database_reads_and_then_migrates(self):
+        path = old_db()
+        con = open_readonly(path)  # a report on a 0.3 database: no new columns, no error
+        self.assertEqual(usage(con, 0, by="client")[0]["key"], None)
+        self.assertEqual(usage(con, 0, session_fp="abc"), [])
+        con.close()
+        db = MetricsDB(path)  # Trioditis 0.4 opening it adds the columns
+        db.record({**CLOUD_CALL, "session_fp": "f" * 16, "client": "ninshubur"})
+        self.assertEqual({r["key"] for r in db.usage(0, by="client")}, {None, "ninshubur"})
+
+    def test_groups_errors_and_session_filter(self):
+        db = mk_db()
+        now = time.time()
+        db.record({**CLOUD_CALL, "client": "ninshubur", "session_fp": "a" * 16}, ts=now)
+        db.record({**CLOUD_CALL, "client": "ninshubur", "session_fp": "a" * 16, "status": 429, "usage": None,
+                   "cost": None}, ts=now)
+        db.record({**LOCAL_CALL, "client": "curl", "session_fp": "b" * 16}, ts=now)
+        db.record({**CLOUD_CALL, "client": "ninshubur"}, ts=now - 3 * 86400)  # outside the window
+        rows = {r["key"]: r for r in db.usage(now - 3600, by="client")}
+        self.assertEqual(rows["ninshubur"]["calls"], 2)
+        self.assertEqual(rows["ninshubur"]["errors"], 1)
+        self.assertAlmostEqual(rows["ninshubur"]["cost"], 0.0219)
+        self.assertEqual(rows["curl"]["local_calls"], 1)
+        self.assertEqual(list(rows), ["ninshubur", "curl"])  # most expensive first
+        only = db.usage(now - 3600, by="model", session_fp="a" * 16)
+        self.assertEqual([(r["key"], r["calls"]) for r in only], [("claude-sonnet", 2)])
+        self.assertEqual(db.usage(now - 3600, until=now - 1), [])
+        with self.assertRaises(ValueError):
+            db.usage(0, by="prompt")
+
+    def test_readonly_never_creates_a_database(self):
+        missing = Path(tempfile.mkdtemp()) / "metrics.db"
+        with self.assertRaises(sqlite3.OperationalError):
+            open_readonly(missing)
+        self.assertFalse(missing.exists())
 
 
 if __name__ == "__main__":
