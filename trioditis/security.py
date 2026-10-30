@@ -5,12 +5,11 @@ from __future__ import annotations
 import hashlib
 import hmac
 import ipaddress
-import os
 import re
 from urllib.parse import urlsplit
 
-from .envvars import env
 from .config import Privacy
+from .envvars import env
 
 # Built-in detectors for data that should never leave the machine by accident.
 # Deliberately conservative: a false positive only means "use a local model".

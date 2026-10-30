@@ -29,3 +29,20 @@ packages = ["trioditis", "trioditis_metrics"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 160          # the code's own width: long lines here are messages and tables, not deep nesting
+extend-exclude = [".venv"]
+
+[tool.ruff.lint]
+# pyflakes, pycodestyle, import order, bugbear, pyupgrade and the bandit security rules.
+select = ["E", "F", "W", "I", "B", "UP", "S"]
+# S603 flags every subprocess call; the checks that matter stay on: shell=True (S602, S605)
+# and a program found through PATH (S607). Trioditis runs fixed programs by absolute path.
+ignore = ["S603"]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests assert, write temp files, use fake keys and feed the bind check 0.0.0.0 on purpose;
+# short setup lines may share a line.
+"tests/**" = ["S101", "S104", "S105", "S106", "S108", "S310", "S607", "E701", "E702"]
+"scripts/**" = ["S101", "S104", "S310", "S607"]

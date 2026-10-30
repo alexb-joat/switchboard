@@ -27,7 +27,7 @@ otherwise. Results go to ~/.hlidskjalv/accounts.json every ACCOUNTS_EVERY_S.
 from __future__ import annotations
 
 import time
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from urllib.parse import urlparse
 
 import httpx
@@ -38,7 +38,7 @@ ACCOUNTS_EVERY_S = 300
 
 
 def _month_start_utc(now: float) -> datetime:
-    t = datetime.fromtimestamp(now, tz=timezone.utc)
+    t = datetime.fromtimestamp(now, tz=UTC)
     return t.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
 
 
@@ -116,7 +116,7 @@ async def anthropic(p: Provider, client: httpx.AsyncClient, now: float) -> dict:
     url = f"{_origin(p)}/v1/organizations/cost_report"
     headers = {"x-api-key": admin, "anthropic-version": "2023-06-01", "User-Agent": "Trioditis (https://github.com/alexb-joat/trioditis)"}
     params: dict = {"starting_at": start.strftime("%Y-%m-%dT%H:%M:%SZ"),
-                    "ending_at": datetime.fromtimestamp(now, tz=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": 31}
+                    "ending_at": datetime.fromtimestamp(now, tz=UTC).strftime("%Y-%m-%dT%H:%M:%SZ"), "limit": 31}
     cents = 0.0
     for _ in range(10):  # paginated
         d = await _get(client, url, headers, params)

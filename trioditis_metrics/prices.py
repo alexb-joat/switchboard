@@ -18,7 +18,6 @@ notes. The file is re-read when it changes, so edits apply without a restart.
 from __future__ import annotations
 
 import json
-import os
 from pathlib import Path
 
 from .home import data_home

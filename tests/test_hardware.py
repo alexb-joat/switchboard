@@ -5,10 +5,9 @@ import subprocess
 import httpx
 import pytest
 
-from trioditis import hardware as hwm
-from trioditis.hardware import (GB, GPU, Hardware, Installed, build_report, installed_models,
-                                  load_prices, memory_budget, route_kind, suggest)
 from tests.test_trioditis import cfg, make_client
+from trioditis import hardware as hwm
+from trioditis.hardware import GB, GPU, Hardware, Installed, build_report, installed_models, load_prices, memory_budget, route_kind, suggest
 
 GiB = 2**30
 
@@ -319,12 +318,13 @@ def test_hardware_report_is_published_for_hlidskjalv(tmp_path, monkeypatch):
     """At startup the router writes the same report as /v1/hardware to a file (0600)."""
     import json as _json
     import os as _os
-    from pathlib import Path as _Path
+
     import httpx as _httpx
     from fastapi.testclient import TestClient as _TC
+
+    import trioditis.hardware as hwmod
     from trioditis.app import create_app
     from trioditis_metrics import BudgetCaps, BudgetGuard, MetricsDB, Prices
-    import trioditis.hardware as hwmod
 
     monkeypatch.setattr(hwmod, "detect", lambda: hwmod.Hardware(os="Linux", arch="x86_64", cpu="test", cores=4,
                                                                 ram_total=16 * hwmod.GB, ram_available=8 * hwmod.GB))

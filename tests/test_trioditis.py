@@ -1,5 +1,6 @@
 import json
 import tempfile
+from datetime import UTC
 from pathlib import Path
 
 import httpx
@@ -452,6 +453,7 @@ def test_old_env_names_still_work_for_now(monkeypatch):
 
 def test_data_home_moves_once_and_leaves_a_link(tmp_path, monkeypatch):
     import os
+
     from trioditis_metrics.home import data_home, migrate_home
     monkeypatch.delenv("HLIDSKJALV_HOME", raising=False)
     monkeypatch.delenv("ARCADE_HOME", raising=False)
@@ -475,9 +477,9 @@ def test_ratelimit_headers_parse_all_three_families():
     a = parse({"anthropic-ratelimit-requests-limit": "1000", "anthropic-ratelimit-requests-remaining": "999",
                "anthropic-ratelimit-requests-reset": "2027-01-15T10:00:30Z",
                "anthropic-ratelimit-input-tokens-remaining": "1999000", "content-type": "application/json"}, now)
-    from datetime import datetime, timezone
+    from datetime import datetime
     assert a["requests"] == {"limit": 1000, "remaining": 999,
-                             "reset_at": datetime(2027, 1, 15, 10, 0, 30, tzinfo=timezone.utc).timestamp()}
+                             "reset_at": datetime(2027, 1, 15, 10, 0, 30, tzinfo=UTC).timestamp()}
     assert a["input_tokens"]["remaining"] == 1999000
     o = parse({"x-ratelimit-limit-tokens": "30000", "x-ratelimit-remaining-tokens": "29000",
                "x-ratelimit-reset-tokens": "6m0s", "x-ratelimit-reset-requests": "12ms"}, now)
@@ -688,7 +690,8 @@ def test_cline_request_streams_tool_calls_and_usage(tmp_path):
     r = c.post("/v1/chat/completions", json=turn, headers={"Authorization": "Bearer my-router-key", **{"User-Agent": "ai-sdk/openai-compatible/3.0.37"}})
     assert r.status_code == 200 and r.content == sse  # the stream is relayed byte for byte, [DONE] included
     assert r.headers["content-type"].startswith("text/event-stream")
-    assert r.headers["X-Trioditis-Route"] == "quick" and r.headers["X-Trioditis-Model"] == "small"  # 30 chars of task text: the default route, and small can call tools
+    # 30 chars of task text: the default route, and small can call tools
+    assert r.headers["X-Trioditis-Route"] == "quick" and r.headers["X-Trioditis-Model"] == "small"
     path, auth, up = seen[0]
     assert auth is None  # the client's router key never goes upstream
     assert [t["function"]["name"] for t in up["tools"]] == [t["function"]["name"] for t in turn["tools"]]
@@ -793,7 +796,8 @@ def test_logs_rotate_once_at_their_cap(tmp_path):
     assert files == ["decisions.jsonl", "decisions.jsonl.1"]  # one backup, never more
     kept = [json.loads(line)["i"] for name in ("decisions.jsonl.1", "decisions.jsonl") for line in (tmp_path / name).read_text().splitlines()]
     assert kept == sorted(kept) and kept[-1] == 19  # the newest records survive, in order
-    import os, stat
+    import os
+    import stat
     if os.name == "posix":
         for p in tmp_path.iterdir():
             assert stat.S_IMODE(p.stat().st_mode) == 0o600, p.name
@@ -806,6 +810,7 @@ def test_logs_rotate_once_at_their_cap(tmp_path):
 
 def test_version_flag_names_the_release(capsys):
     import pytest
+
     from trioditis import __version__
     from trioditis.__main__ import main
     with pytest.raises(SystemExit) as e:
@@ -1052,6 +1057,7 @@ FACTS = {
 
 def test_price_import_matches_by_provider_id_and_keeps_its_source():
     import datetime as dt
+
     from trioditis.pricefacts import FactsError, plan_import, stale_warning
     current = {"big": {"input": 3, "output": 15}, "other": {"input": 1, "output": 1}, "_note": "kept"}
     table, changes, unmatched = plan_import(FACTS, {"big": "big-1", "small": "tiny-9", "gpt": "gpt-5"}, current)
@@ -1072,6 +1078,7 @@ def test_price_import_matches_by_provider_id_and_keeps_its_source():
 def test_prices_import_cli_writes_a_private_file(tmp_path, capsys):
     import os
     import stat
+
     from trioditis.__main__ import main
     cfg_file = tmp_path / "config.yaml"
     cfg_file.write_text(json.dumps(BASE))  # JSON is valid YAML

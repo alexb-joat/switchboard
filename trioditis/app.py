@@ -17,13 +17,13 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 
 from trioditis_metrics import BudgetGuard, MetricsDB, Prices
-from trioditis_metrics.ratelimits import parse as parse_ratelimits
 from trioditis_metrics.home import data_home
+from trioditis_metrics.ratelimits import parse as parse_ratelimits
 
-from . import __version__
-from .envvars import env
+from .accounts import ACCOUNTS_EVERY_S, adapter_for
+from .accounts import report as account_report
 from .config import Config
-from .accounts import ACCOUNTS_EVERY_S, adapter_for, report as account_report
+from .envvars import env
 from .hardware import ReportCache
 from .router import Decision, Embedder, RoutingError, SessionPins, all_text, decide
 from .security import check_bearer, fingerprint, host_header_is_local, origin_is_local, router_api_key
@@ -145,7 +145,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
             try:
                 rep = await hw_cache.get(cfg, client)
                 _write_private(hardware_file, json.dumps({**rep, "generated_at": time.time()}))
-            except Exception:  # best-effort: never take the router down over a report
+            except Exception:  # noqa: S110 -- best-effort: a report must never take the router down; the next round retries
                 pass
             await asyncio.sleep(HARDWARE_EVERY_S)
 
@@ -166,7 +166,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
         while True:
             try:
                 await refresh_accounts()
-            except Exception:
+            except Exception:  # noqa: S110 -- best-effort, as above: the provider may be down; the next round retries
                 pass
             await asyncio.sleep(ACCOUNTS_EVERY_S)
 
@@ -230,7 +230,7 @@ def create_app(cfg: Config, transport: httpx.AsyncBaseTransport | None = None,
         try:
             body = json.loads(raw)
         except ValueError:
-            raise RoutingError(400, "body must be JSON")
+            raise RoutingError(400, "body must be JSON") from None
         if not isinstance(body, dict):
             raise RoutingError(400, "body must be a JSON object")
         return body

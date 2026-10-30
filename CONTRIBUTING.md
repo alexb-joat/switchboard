@@ -13,6 +13,7 @@ Thanks for helping. Trioditis sits between people and every model they use, so t
 3. **Make the change** and add tests in `tests/`.
 4. **Check** before pushing:
    ```bash
+   ruff check .                # lint: pyflakes, bugbear, import order and the bandit security rules (pyproject.toml)
    python -m pytest -q
    python scripts/smoke.py
    ```

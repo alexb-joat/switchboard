@@ -21,14 +21,12 @@ from __future__ import annotations
 
 import itertools
 import json
-import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from .home import data_home
-
 from .db import MetricsDB
+from .home import data_home
 
 DEFAULT_CONFIG_PATH = data_home() / "budget.json"
 
@@ -46,7 +44,7 @@ class BudgetCaps:
     assume_output_tokens: int = 1024
 
     @classmethod
-    def load(cls, path: Path | None = None) -> "BudgetCaps":
+    def load(cls, path: Path | None = None) -> BudgetCaps:
         p = path or DEFAULT_CONFIG_PATH
         try:
             data = json.loads(p.read_text(encoding="utf-8"))

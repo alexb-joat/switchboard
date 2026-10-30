@@ -6,16 +6,15 @@ import argparse
 import asyncio
 import json
 import os
-import sys
-
 import re
 import stat
+import sys
 import time
 from pathlib import Path
 
 from . import __version__
-from .envvars import env
 from .config import ConfigError, load_config
+from .envvars import env
 from .security import assert_safe_bind
 
 _ENV_LINE = re.compile(r"^\s*([A-Z_][A-Z0-9_]*)\s*=\s*(.*?)\s*$")
@@ -112,6 +111,7 @@ def main(argv: list[str] | None = None) -> None:
 
     if args.cmd == "hardware":
         import httpx
+
         from .hardware import build_report, detect, format_report, installed_models, load_prices
 
         async def listed():
@@ -139,6 +139,7 @@ def main(argv: list[str] | None = None) -> None:
         sys.stdout = sys.stderr = stream
 
     import uvicorn
+
     from .app import create_app
 
     uvicorn.run(
@@ -176,6 +177,7 @@ def parse_when(text: str, now: float | None = None) -> float:
 
 def prices_import(cfg, args) -> int:
     from trioditis_metrics.prices import DEFAULT_PRICES_PATH
+
     from .pricefacts import FactsError, plan_import, stale_warning, write_prices
 
     try:
@@ -214,7 +216,9 @@ def prices_import(cfg, args) -> int:
 
 def usage_report(args) -> int:
     import sqlite3
+
     from trioditis_metrics.db import DEFAULT_PATH, open_readonly, usage
+
     from .security import fingerprint
 
     try:

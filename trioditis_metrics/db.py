@@ -218,8 +218,9 @@ def usage(conn: sqlite3.Connection, since: float, until: float | None = None, by
         where += " AND session_fp = ?"
         args.append(session_fp)
     unpriced = "SUM(unpriced)" if "unpriced" in have else "0"
+    # The column comes from GROUPS and the filters are fixed text; every value is a bound parameter.
     rows = conn.execute(
-        f"SELECT {key} AS key, COUNT(*) AS calls, "
+        f"SELECT {key} AS key, COUNT(*) AS calls, "  # noqa: S608
         "SUM(CASE WHEN status IS NULL OR status >= 400 THEN 1 ELSE 0 END) AS errors, "
         "COALESCE(SUM(tokens_in), 0) AS tokens_in, COALESCE(SUM(tokens_out), 0) AS tokens_out, "
         f"ROUND(COALESCE(SUM(cost), 0), 6) AS cost, {unpriced} AS unpriced, SUM(fallbacks) AS fallbacks, "
