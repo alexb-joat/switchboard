@@ -1,4 +1,4 @@
-"""Command line entry point: python -m trioditis [serve|check|explain|hardware]."""
+"""Command line entry point: python -m trioditis [serve|check|explain|hardware|usage]."""
 
 from __future__ import annotations
 
@@ -10,6 +10,7 @@ import sys
 
 import re
 import stat
+import time
 from pathlib import Path
 
 from . import __version__
@@ -66,7 +67,17 @@ def main(argv: list[str] | None = None) -> None:
     h = sub.add_parser("hardware", help="detect hardware and suggest local models (no config change)")
     h.add_argument("--json", action="store_true", help="machine-readable output")
 
+    u = sub.add_parser("usage", help="calls, tokens and spend from the metrics database (no config needed)")
+    u.add_argument("--since", default="24h", help="30m, 24h, 7d, today, month or YYYY-MM-DD (default 24h)")
+    u.add_argument("--until", default=None, help="same forms as --since; default now")
+    u.add_argument("--by", default="model", choices=["model", "route", "provider", "client", "session", "day"])
+    u.add_argument("--session", default=None, help="only this X-Session-Id (matched by its hash)")
+    u.add_argument("--db", default=None, help="metrics database (default ~/.hlidskjalv/metrics.db)")
+    u.add_argument("--json", action="store_true", help="machine-readable output")
+
     args = ap.parse_args(argv)
+    if args.cmd == "usage":  # reads the metrics database only: works without a config
+        sys.exit(usage_report(args))
     try:
         cfg = load_config(args.config)
     except (OSError, ConfigError) as err:
@@ -129,6 +140,84 @@ def main(argv: list[str] | None = None) -> None:
         proxy_headers=False,
         log_level="info",
     )
+
+
+_AGO = re.compile(r"^(\d+)([mhdw])$")
+_UNIT_S = {"m": 60, "h": 3600, "d": 86400, "w": 7 * 86400}
+
+
+def parse_when(text: str, now: float | None = None) -> float:
+    """'30m', '24h', '7d', '2w' ago; 'today' or 'month' (local midnight); 'YYYY-MM-DD' (local midnight)."""
+    now = time.time() if now is None else now
+    text = text.strip().lower()
+    if m := _AGO.match(text):
+        return now - int(m.group(1)) * _UNIT_S[m.group(2)]
+    t = time.localtime(now)
+    if text == "today":
+        return time.mktime((t.tm_year, t.tm_mon, t.tm_mday, 0, 0, 0, 0, 0, -1))
+    if text == "month":
+        return time.mktime((t.tm_year, t.tm_mon, 1, 0, 0, 0, 0, 0, -1))
+    try:
+        d = time.strptime(text, "%Y-%m-%d")
+    except ValueError:
+        raise ValueError(f"cannot read {text!r}: use 30m, 24h, 7d, today, month or YYYY-MM-DD") from None
+    return time.mktime((d.tm_year, d.tm_mon, d.tm_mday, 0, 0, 0, 0, 0, -1))
+
+
+def usage_report(args) -> int:
+    import sqlite3
+    from trioditis_metrics.db import DEFAULT_PATH, open_readonly, usage
+    from .security import fingerprint
+
+    try:
+        since = parse_when(args.since)
+        until = parse_when(args.until) if args.until else None
+    except ValueError as err:
+        print(f"usage: {err}", file=sys.stderr)
+        return 2
+    path = Path(args.db).expanduser() if args.db else DEFAULT_PATH
+    sfp = fingerprint(args.session) if args.session else None
+    try:
+        conn = open_readonly(path)
+        try:
+            rows = usage(conn, since, until, args.by, sfp)
+        finally:
+            conn.close()
+    except sqlite3.Error:
+        rows = None  # no database yet (Trioditis has not served a call), or not one of ours
+    total = {k: sum((r[k] or 0) for r in rows or []) for k in
+             ("calls", "errors", "tokens_in", "tokens_out", "cost", "unpriced", "fallbacks", "local_calls")}
+    total["cost"] = round(total["cost"], 6)
+    stamp = lambda ts: time.strftime("%Y-%m-%dT%H:%M:%S%z", time.localtime(ts)) if ts else None  # noqa: E731
+    if args.json:
+        for r in rows or []:
+            r["first"], r["last"] = stamp(r.pop("first_ts")), stamp(r.pop("last_ts"))
+        print(json.dumps({"since": stamp(since), "until": stamp(until), "by": args.by, "session": sfp,
+                          "database": str(path), "rows": rows or [], "total": total}, indent=2))
+        return 0
+    if rows is None:
+        print(f"no calls recorded yet (no metrics database at {path})")
+        return 0
+    span = f"since {stamp(since)}" + (f" until {stamp(until)}" if until else "")
+    print(f"usage by {args.by} {span}" + (f", session {args.session!r}" if args.session else ""))
+    if not rows:
+        print("no calls in this window")
+        return 0
+    head = (args.by, "calls", "errors", "tokens in", "tokens out", "cost USD", "unpriced")
+    table = [head] + [(str(r["key"]) if r["key"] is not None else "-", r["calls"], r["errors"], r["tokens_in"],
+                       r["tokens_out"], f"{r['cost']:.4f}", r["unpriced"]) for r in rows]
+    table.append(("total", total["calls"], total["errors"], total["tokens_in"], total["tokens_out"],
+                  f"{total['cost']:.4f}", total["unpriced"]))
+    widths = [max(len(f"{row[i]:,}" if isinstance(row[i], int) else str(row[i])) for row in table)
+              for i in range(len(head))]
+    for n, row in enumerate(table):
+        cells = [f"{v:,}" if isinstance(v, int) else str(v) for v in row]
+        print("  ".join(c.ljust(widths[i]) if i == 0 else c.rjust(widths[i]) for i, c in enumerate(cells)))
+        if n == 0 or n == len(table) - 2:
+            print("  ".join("-" * w for w in widths))
+    if total["unpriced"]:
+        print(f"{total['unpriced']} cloud call(s) had no price: add them to ~/.hlidskjalv/prices.json")
+    return 0
 
 
 if __name__ == "__main__":

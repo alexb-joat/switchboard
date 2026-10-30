@@ -100,7 +100,7 @@ Trioditis speaks the OpenAI chat-completions format, which most tools support. C
 
 ## Spending and limits
 
-Every cloud call is checked against your daily and monthly caps first (defaults: $1 a day, $15 a month). Over a cap, the route's local model answers instead, so you get an answer, not a bill. Per-provider caps, provider rate-limit and balance readouts, and call history are in [docs/spending-and-limits.md](docs/spending-and-limits.md). `trioditis hardware` suggests which local models fit your computer ([docs/hardware.md](docs/hardware.md)).
+Every cloud call is checked against your daily and monthly caps first (defaults: $1 a day, $15 a month). Over a cap, the route's local model answers instead, so you get an answer, not a bill. `trioditis usage --since 7d --by client` shows what each tool spent. Per-provider caps, provider rate-limit and balance readouts, and call history are in [docs/spending-and-limits.md](docs/spending-and-limits.md). `trioditis hardware` suggests which local models fit your computer ([docs/hardware.md](docs/hardware.md)).
 
 ## Security at a glance
 

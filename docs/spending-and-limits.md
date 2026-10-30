@@ -8,7 +8,7 @@ How Trioditis keeps cloud spend bounded, what it records, and what each provider
 
 ## Spending caps and call history
 
-Every request is also stored in a small SQLite database, `~/.hlidskjalv/metrics.db` (owner-only, metadata only: route, model, tokens, cost, latency; never prompt text). `logs/decisions.jsonl` stays as it is.
+Every request is also stored in a small SQLite database, `~/.hlidskjalv/metrics.db` (owner-only, metadata only: route, model, tokens, cost, latency, the calling tool's name and a hash of the session id; never prompt text). `logs/decisions.jsonl` stays as it is.
 
 Before any cloud call, Trioditis checks today's and this month's spend against your caps in `~/.hlidskjalv/budget.json` (defaults if the file is missing: $1/day, $15/month):
 
@@ -33,6 +33,23 @@ Spend is calculated from `~/.hlidskjalv/prices.json`, the same file Hlidskjalv r
 ```
 
 A provider over its own cap is skipped while the others stay available.
+
+## Usage reports
+
+`trioditis usage` reads the metrics database and prints calls, errors, tokens and spend per group. It needs no config and never writes to the database, so it is safe while the router runs:
+
+```bash
+python -m trioditis usage                          # last 24 hours, per model
+python -m trioditis usage --since 7d --by client   # per calling tool
+python -m trioditis usage --since month --by day
+python -m trioditis usage --session eval/run-7 --json
+```
+
+`--since` and `--until` take `30m`, `24h`, `7d`, `2w`, `today`, `month` or a date (`2026-10-01`). `--by` is `model`, `route`, `provider`, `client`, `session` or `day`.
+
+**Per tool.** Each call records the calling tool's name: the `X-Trioditis-Client` header when a client sets one, else the first word of its `User-Agent` (`ninshubur/0.1 …` → `ninshubur`, `curl/8.5` → `curl`). Tools built on a shared library show that library's name; Cline, for example, sends `ai-sdk/openai-compatible/…` and appears as `ai-sdk`.
+
+**Per session.** Requests that carry `X-Session-Id` (or the OpenAI `user` field) are stored under a hash of it, the same hash `logs/decisions.jsonl` holds; `--session ID` hashes the id you give and matches on that. A batch job that sends `X-Session-Id: myjob/<run id>` can therefore read back exactly what one run cost.
 
 ## What providers report about your account
 

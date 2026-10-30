@@ -834,3 +834,55 @@ def test_session_and_client_reach_the_metrics_db():
     assert row["client"] == "ninshubur"
     assert row["session_fp"] == fingerprint("eval/run-7")  # the hash, never the id itself
     assert [u["key"] for u in db.usage(0, by="session")] == [fingerprint("eval/run-7")]
+
+
+def test_parse_when_forms():
+    from trioditis.__main__ import parse_when
+    now = 1_800_000_000.0
+    assert parse_when("30m", now) == now - 1800
+    assert parse_when("24h", now) == now - 86400
+    assert parse_when("2w", now) == now - 14 * 86400
+    assert parse_when("today", now) <= now < parse_when("today", now) + 86400 + 3600
+    assert parse_when("month", now) <= parse_when("today", now)
+    assert parse_when("2026-10-01", now) < parse_when("2026-10-02", now)
+    with pytest.raises(ValueError):
+        parse_when("yesterday", now)
+
+
+def test_usage_cli_reads_the_database_without_a_config(capsys, tmp_path):
+    from trioditis.__main__ import main
+    from trioditis.security import fingerprint
+    db = MetricsDB(tmp_path / "metrics.db")
+    db.record({"route": "code", "model": "big", "local": False, "status": 200, "cost": 0.02,
+               "usage": {"prompt_tokens": 1000, "completion_tokens": 200},
+               "client": "ninshubur", "session_fp": fingerprint("eval/run-1")})
+    db.record({"route": "quick", "model": "small", "local": True, "status": 200, "cost": 0.0,
+               "usage": {"prompt_tokens": 50, "completion_tokens": 10}, "client": "curl"})
+    db.close()
+    args = ["--config", str(tmp_path / "no-config.yaml"), "usage", "--db", str(tmp_path / "metrics.db")]
+    with pytest.raises(SystemExit) as e:
+        main(args + ["--by", "client", "--json"])
+    assert e.value.code == 0
+    out = json.loads(capsys.readouterr().out)
+    assert [r["key"] for r in out["rows"]] == ["ninshubur", "curl"]
+    assert out["total"]["calls"] == 2 and out["total"]["cost"] == 0.02
+    with pytest.raises(SystemExit):
+        main(args + ["--session", "eval/run-1", "--json"])
+    out = json.loads(capsys.readouterr().out)
+    assert out["session"] == fingerprint("eval/run-1") and [r["key"] for r in out["rows"]] == ["big"]
+    with pytest.raises(SystemExit):
+        main(args)  # the table
+    table = capsys.readouterr().out
+    assert "total" in table and "0.0200" in table
+
+
+def test_usage_cli_without_a_database(capsys, tmp_path):
+    from trioditis.__main__ import main
+    with pytest.raises(SystemExit) as e:
+        main(["usage", "--db", str(tmp_path / "missing.db")])
+    assert e.value.code == 0
+    assert "no calls recorded yet" in capsys.readouterr().out
+    assert not (tmp_path / "missing.db").exists()
+    with pytest.raises(SystemExit) as e:
+        main(["usage", "--since", "last tuesday", "--db", str(tmp_path / "missing.db")])
+    assert e.value.code == 2
