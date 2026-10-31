@@ -1,5 +1,23 @@
 # Changelog
 
+## 0.5.0 (2026-10-31)
+
+Local and cheap first, coding agents recognised, rate limits stepped around; installable as a package.
+
+**Routing**
+- Coding agents: a route's `tool_keywords` are matched against the names of the tools a request offers. The example `code` route lists `editor`, `read_file`, `run_command` and others, so Cline with `model: auto` lands on `code` instead of `quick`. An agent's later turns ("proceed") stay on the route its task started on, even without a session id.
+- `prefer: cheapest` orders a route's models local first ($0), then by this request's estimated cost; `prefer: fastest` by the median latency of recent calls. `/v1/route` and `explain` show the estimates. The example config prefers cheapest on `quick` and `writing`.
+- A provider that answered "too many requests" (or reported a rate limit at zero) is tried last until its wait is over, so the next requests go straight to a model that can answer.
+- When no model of a route fits, the fallback takes only another route's model or a local one, never a model you call by name only.
+- The token estimate counts tool definitions, as the cost estimate already did.
+
+**Installing**
+- `trioditis init` writes `config.yaml` and `.env` (owner-only) from templates shipped in the package, and never overwrites.
+- The version is written once (`trioditis.__version__`). A release workflow checks the tag against it, builds the sdist and wheel from hash-pinned tools, tests the wheel in a clean venv and attaches both files to the GitHub release; PyPI publishing through trusted publishing is ready and switched on once the PyPI project exists.
+
+**Removed**
+- The pre-rename `SWITCHBOARD_*` environment names, `$ARCADE_HOME` and the `~/.arcade` folder with its one-time move.
+
 ## 0.4.0 (2026-10-30)
 
 Ready for batch jobs: an evaluation or pipeline can pin a model version, read back what one run cost, and wait on a rate limit instead of failing.

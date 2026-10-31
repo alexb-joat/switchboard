@@ -30,7 +30,7 @@
 
 | Private by default | Cost-aware | Small and auditable | Explains itself |
 |---|---|---|---|
-| Prompts with emails, cards, keys or passwords go to a local model or are rejected. They are never sent to a cloud API by accident. | Daily and monthly caps with automatic local fallback, plus per-provider limits and live spend. | About 3,200 lines and four hash-pinned dependencies. No LiteLLM, no LangChain, no telemetry. | Every response names its route and model. A log records the reasons, with no prompt text. |
+| Prompts with emails, cards, keys or passwords go to a local model or are rejected. They are never sent to a cloud API by accident. | Daily and monthly caps with automatic local fallback, plus per-provider limits and live spend. | About 3,400 lines and four hash-pinned dependencies. No LiteLLM, no LangChain, no telemetry. | Every response names its route and model. A log records the reasons, with no prompt text. |
 
 ## Quick start
 
@@ -46,7 +46,7 @@ ollama pull llama3.2:3b && ollama pull qwen2.5-coder:7b && ollama pull nomic-emb
 git clone https://github.com/alexb-joat/trioditis.git && cd trioditis
 python3 -m venv .venv && source .venv/bin/activate    # Debian/Ubuntu: sudo apt install python3-venv
 pip install --require-hashes --no-deps -r requirements.txt
-cp config.example.yaml config.yaml && cp .env.example .env && chmod 600 .env
+python -m trioditis init     # writes config.yaml and .env (owner-only); never overwrites
 ```
 
 <details>
@@ -56,7 +56,7 @@ cp config.example.yaml config.yaml && cp .env.example .env && chmod 600 .env
 git clone https://github.com/alexb-joat/trioditis.git; cd trioditis
 py -3 -m venv .venv; .\.venv\Scripts\Activate.ps1
 pip install --require-hashes --no-deps -r requirements.txt
-Copy-Item config.example.yaml config.yaml; Copy-Item .env.example .env
+python -m trioditis init
 ```
 
 </details>
